@@ -15,7 +15,7 @@ class AppUpdatesTest {
     private fun json() =
         JSONObject()
             .put("schema", 1)
-            .put("packageName", "io.github.tsukiyo_zero.hgtv")
+            .put("packageName", "io.github.wuzuo.hgtv")
             .put("versionCode", 10001)
             .put("versionName", "0.9.0+1")
             .put("minSdk", 26)

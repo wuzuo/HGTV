@@ -2439,7 +2439,7 @@ class MainActivity : Activity() {
             setting(device, "关于HGTV") {
                 tvTools.info(
                     "关于HGTV",
-                    "HGTV · 非官方客户端\n作者：tsukiyo-zero\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/wuzuo/HGTV\n\n本应用与红果官方无隶属关系。",
+                    "HGTV · 非官方客户端\n作者：wuzuo\n版本：${BuildConfig.VERSION_NAME}\n项目：https://github.com/wuzuo/HGTV\n\n本应用与红果官方无隶属关系。",
                     about,
                 )
             }

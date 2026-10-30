@@ -108,7 +108,7 @@ def manifest(release):
                 badging = run([str(build_tools/'aapt'), 'dump', 'badging', str(path)])
             line = next((line for line in badging.splitlines() if line.startswith('package:')), '')
             fields = dict(re.findall(r"(\w+)='([^']*)'", line))
-            if fields.get('name') not in ('com.hgtv.tv','io.github.tsukiyo_zero.hgtv'):
+            if fields.get('name') not in ('com.hgtv.tv','io.github.wuzuo.hgtv'):
                 continue
             code = int(fields['versionCode'])
             if not 1<=code<=2147483647:
@@ -119,7 +119,7 @@ def manifest(release):
             raise Failure('Historical release contains no recognized TV APK')
         return max(found, key=lambda m: m['versionCode'])
     data = json.loads(read_public(asset['browser_download_url'], 128*1024))
-    if (data['tag'] != release['tag_name'] or data['packageName'] not in ('com.hgtv.tv','io.github.tsukiyo_zero.hgtv')
+    if (data['tag'] != release['tag_name'] or data['packageName'] not in ('com.hgtv.tv','io.github.wuzuo.hgtv')
             or not re.fullmatch(re.escape(data['tag'].removeprefix('kotlin-v'))+r'(?:-[0-9A-Za-z.+-]+)?', data['versionName'])
             or not isinstance(data['versionCode'], int) or not 1<=data['versionCode']<=2147483647):
         raise Failure('Published manifest identity/version mismatch')
@@ -307,7 +307,7 @@ def build(state, checkpoint, apis):
 
 def merge(state, checkpoint, github):
     if not state.get('pr'):
-        prs = github.api('/pulls?state=all&head=tsukiyo-zero:feature-release-'+state['version'])
+        prs = github.api('/pulls?state=all&head=wuzuo:feature-release-'+state['version'])
         pr = next((p for p in prs if p['head']['sha']==state['prepared']), None)
         if pr is None:
             git('push', '-u', 'origin', 'feature-release-'+state['version'])
@@ -343,7 +343,7 @@ def sync_tags(state, tokens):
     git('push', 'origin', 'refs/tags/'+state['tag'])
     with tempfile.TemporaryDirectory(prefix='hgtv-git-auth-') as temp:
         askpass = Path(temp)/'askpass'
-        askpass.write_text('#!/usr/bin/env python3\nimport os,sys\nprint("tsukiyo-zero" if "username" in sys.argv[1].lower() else os.environ["HGTV_PUSH_TOKEN"])\n')
+        askpass.write_text('#!/usr/bin/env python3\nimport os,sys\nprint("wuzuo" if "username" in sys.argv[1].lower() else os.environ["HGTV_PUSH_TOKEN"])\n')
         askpass.chmod(0o700)
         env = dict(os.environ, GIT_ASKPASS=str(askpass), GIT_TERMINAL_PROMPT='0', HGTV_PUSH_TOKEN=tokens['GITCODE_TOKEN'])
         run(['git', '-c', 'credential.helper=', 'push', GITCODE, state['source']+':refs/heads/main', 'refs/tags/'+state['tag']], env)

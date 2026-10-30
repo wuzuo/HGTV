@@ -19,10 +19,10 @@
 
 | 端 | 版本 | 说明 |
 | --- | --- | --- |
-| Android TV | 0.1.11 / versionCode 52 | 安装标识 `io.github.tsukiyo_zero.hgtv`，namespace `com.hgtv.tv` |
+| Android TV | 0.1.11 / versionCode 52 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
 | Windows | 0.1.0 | 便携 ZIP，由 CI 构件提供，未接入自动更新 |
 
-两端都是新工程：applicationId 与旧版 `io.github.tsukiyo_zero.guoyingtv` 不同，**不能通过旧版应用覆盖升级，本机数据与登录态也不会自动迁移**。需要重新安装并重新登录，账户收藏与历史从云端恢复。
+两端都是新工程：applicationId 与旧版 `io.github.wuzuo.guoyingtv` 不同，**不能通过旧版应用覆盖升级，本机数据与登录态也不会自动迁移**。需要重新安装并重新登录，账户收藏与历史从云端恢复。
 
 ## Android TV
 

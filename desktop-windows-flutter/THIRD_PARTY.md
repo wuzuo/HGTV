@@ -33,5 +33,5 @@ libmpv / FFmpeg 的源码与许可证文本可从 <https://mpv.io> 与 <https://
 
 ## 其他
 
-- 应用图标取自仓库 `kotlin-tv/artwork/hgtv-icon-c3.png`，构建时打包为多尺寸 `app_icon.ico`。
+- 应用图标取自仓库 `kotlin-tv/artwork/hgtv-icon-c3.png`，已导出为多尺寸 `app_icon.ico` 随客户端提交。
 - 所有剧集、封面、评论等内容版权归原权利人所有；客户端仅做本机解析与播放，不托管任何内容。

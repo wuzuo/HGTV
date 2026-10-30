@@ -85,12 +85,12 @@ class RunnerTests(unittest.TestCase):
         release=dict(tag_name='kotlin-v0.0.8',assets=[dict(name='update.json',browser_download_url='https://github.com/manifest')])
         data=dict(tag='kotlin-v0.0.8',packageName='com.hgtv.tv',versionName='0.0.8-android6',versionCode=8)
         with patch.object(m,'read_public',return_value=json.dumps(data).encode()): self.assertEqual(m.manifest(release),data)
-        data['packageName']='io.github.tsukiyo_zero.hgtv'
+        data['packageName']='io.github.wuzuo.hgtv'
         with patch.object(m,'read_public',return_value=json.dumps(data).encode()): self.assertEqual(m.manifest(release),data)
         data['packageName']='unrelated.app'
         with patch.object(m,'read_public',return_value=json.dumps(data).encode()):
             with self.assertRaises(m.Failure): m.manifest(release)
-        data['packageName']='io.github.tsukiyo_zero.hgtv'
+        data['packageName']='io.github.wuzuo.hgtv'
         data['versionCode']=0
         with patch.object(m,'read_public',return_value=json.dumps(data).encode()):
             with self.assertRaises(m.Failure): m.manifest(release)

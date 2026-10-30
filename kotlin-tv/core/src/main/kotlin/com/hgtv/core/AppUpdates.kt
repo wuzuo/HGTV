@@ -56,7 +56,7 @@ data class AppUpdate(
             val o = JSONObject(json)
             require(
                 o.getInt("schema") == 1 &&
-                    o.getString("packageName") == "io.github.tsukiyo_zero.hgtv"
+                    o.getString("packageName") == "io.github.wuzuo.hgtv"
             ) {
                 "更新信息不匹配"
             }

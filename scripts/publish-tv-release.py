@@ -77,7 +77,7 @@ def bundle(directory):
     if Path(name).name != name or not name.endswith('.apk'):
         raise Failure('Invalid APK filename')
     files = [directory / name, directory / 'release-notes.md', directory / 'update.json']
-    if manifest['packageName'] != 'io.github.tsukiyo_zero.hgtv' or manifest['minSdk'] != 23:
+    if manifest['packageName'] != 'io.github.wuzuo.hgtv' or manifest['minSdk'] != 23:
         raise Failure('Unexpected package or minSdk')
     apk = files[0].read_bytes()
     if len(apk) != manifest['apk']['size'] or hashlib.sha256(apk).hexdigest() != manifest['apk']['sha256']:

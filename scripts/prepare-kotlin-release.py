@@ -17,7 +17,7 @@ def prepare(apk, aapt, output, tag=None, notes=""):
     package, version = fields["name"], fields["versionName"]
     code = int(fields["versionCode"])
     sdk = int(re.search(r"^sdkVersion:'(\d+)'", badging, re.M).group(1))
-    if package != "io.github.tsukiyo_zero.hgtv" or not 1 <= code <= 2147483647:
+    if package != "io.github.wuzuo.hgtv" or not 1 <= code <= 2147483647:
         raise ValueError("APK package or versionCode is not supported")
     if not re.fullmatch(r"[0-9][0-9A-Za-z.+-]{0,63}", version):
         raise ValueError("Unsupported APK versionName")

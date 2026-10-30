@@ -18,7 +18,7 @@ android {
     namespace = "com.hgtv.tv"
     compileSdk = 36
     defaultConfig {
-        applicationId = "io.github.tsukiyo_zero.hgtv"
+        applicationId = "io.github.wuzuo.hgtv"
         minSdk = 23
         targetSdk = 36
         versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 52

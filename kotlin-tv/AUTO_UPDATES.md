@@ -6,7 +6,7 @@
 
 ## 新包名过渡
 
-本轮 TV 更名为「HGTV」，安装标识改为 `io.github.tsukiyo_zero.hgtv`，当前正式 0.1.7 / 48 仍是旧包名 `com.hgtv.tv`。新包名首次正式版需用户手动单独安装，不能依赖旧 App 的检查更新完成跨包名升级。本机数据与登录态不自动继承，账户需重新登录；当前设置没有备份恢复入口，尚不能把底层备份实现作为现成的用户迁移步骤。测试期间保持版本号不变。
+本轮 TV 更名为「HGTV」，安装标识改为 `io.github.wuzuo.hgtv`，当前正式 0.1.7 / 48 仍是旧包名 `com.hgtv.tv`。新包名首次正式版需用户手动单独安装，不能依赖旧 App 的检查更新完成跨包名升级。本机数据与登录态不自动继承，账户需重新登录；当前设置没有备份恢复入口，尚不能把底层备份实现作为现成的用户迁移步骤。测试期间保持版本号不变。
 
 新包的更新校验、打包与上传入口只接受新包名。统一入口读取历史版本时允许这两个已知包名以规划版本并保留旧签名基线，拒绝无关包名；首次过渡的自动更新说明会明确提示单独安装。新包名正式发布后继续同包名更新，不另开旧包名 APK 版本线；GitCode/GitHub 仓库及附件命名保持原协议。
 
@@ -15,7 +15,7 @@
 日常优先使用下方统一入口；本节分步骤流程及后面的打包／上传命令保留用于排查和单独操作。
 
 1. 在 `app/build.gradle.kts` 调整 versionName，增加 versionCode。正式发布内部版本号必须超过上一正式版本；调试过程中不递增，使用文件名区分。允许跳过未公开的版本号，无需补发每个中间版本。环境变量可覆盖默认版本，打包后核对 APK 实际元数据。
-2. 使用新包名 `io.github.tsukiyo_zero.hgtv` 和现有签名构建，检查最低系统、版本和签名。不要换用新 Debug 签名或将签名密钥提交到仓库。构建方法见 [README](README.md)。
+2. 使用新包名 `io.github.wuzuo.hgtv` 和现有签名构建，检查最低系统、版本和签名。不要换用新 Debug 签名或将签名密钥提交到仓库。构建方法见 [README](README.md)。
 3. 执行 `./scripts/build-kotlin.sh`，自动在 `outputs/releases/<tag>/` 生成配套 APK 和 `update.json`。清单从实际 APK 提取版本、包名、最低系统，并计算大小和 SHA256；环境变量覆盖后的版本也会正确读取。直接运行 Gradle 或 IDEA 的普通构建任务仍只生成 APK。
 4. 在 GitCode 创建同仓库 Release。Target 选择实际打包所用的提交或分支；APK 若来自尚未合并的功能分支，不能误选 main。
 5. 上传配套 APK 和 `update.json`，正式发布并设为 Latest。草稿和 Pre-release 不用于稳定在线更新。
@@ -51,7 +51,7 @@ python3 scripts/prepare-kotlin-release.py \
 ```json
 {
   "schema": 1,
-  "packageName": "io.github.tsukiyo_zero.hgtv",
+  "packageName": "io.github.wuzuo.hgtv",
   "versionCode": 23,
   "versionName": "0.0.7-search-input",
   "minSdk": 23,

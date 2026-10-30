@@ -67,8 +67,8 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows-flutter.ps1
 
 不需要另外安装 VLC：播放走 libmpv，`flutter build windows` 会把它一并打进包里。
 
-应用图标已提交在 `windows/runner/resources/app_icon.ico`（16–256 像素共 7 个尺寸，取自
-`kotlin-tv/artwork/hgtv-icon-c3.png`），构建时写入 exe 资源。
+应用图标已提交在 `windows/runner/resources/app_icon.ico`（16–256 像素共 9 个尺寸，由
+`kotlin-tv/artwork/hgtv-icon-c3.png` 导出），构建时写入 exe 资源。
 
 ## 开发
 

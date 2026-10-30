@@ -1,10 +1,10 @@
 # HGTV 原生客户端
 
-工程：Kotlin + Android View + Media3。最低 Android 6.0 / API 23；compileSdk、targetSdk 为 36。安装标识为 `io.github.tsukiyo_zero.hgtv`，Kotlin namespace 为 `com.hgtv.tv`，Manifest 使用完整 Activity 类名，真正安装标识以 APK 的 applicationId 为准。
+工程：Kotlin + Android View + Media3。最低 Android 6.0 / API 23；compileSdk、targetSdk 为 36。安装标识为 `io.github.wuzuo.hgtv`，Kotlin namespace 为 `com.hgtv.tv`，Manifest 使用完整 Activity 类名，真正安装标识以 APK 的 applicationId 为准。
 
 当前版本为 HGTV 0.1.11 / versionCode 52。本工程使用全新 applicationId，与旧仓库发布的旧包名应用互相独立：不能互相覆盖升级，本机数据与登录态也不自动迁移。备份恢复底层代码仍在，但当前设置页未接入入口，尚不能提供完整的图形迁移流程；重新登录后可获取账户内容。保持原签名与 Android 6 v1。
 
-桌面图标与应用内标识采用 C3 蓝紫渐变果实银幕图，TV 启动器提供「HGTV」横幅。主图与生成提示词见 [品牌资源](artwork/README.md)；多密度桌面图标覆盖 Android 6+，本轮使用完整位图，不依赖透明拆层或自适应前景。
+桌面图标与应用内标识采用橙红到青绿的渐变播放键图，TV 启动器提供「HGTV」横幅。主图与导出方式见 [品牌资源](artwork/README.md)；多密度桌面图标覆盖 Android 6+，使用完整位图，不依赖透明拆层或自适应前景。
 
 功能介绍见 [项目主页](../README.md)，工作约定见 [开发流程](../CONTRIBUTING.md)。
 
