@@ -1,0 +1,111 @@
+// SPDX-License-Identifier: GPL-3.0-only
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:hgtv_windows/api.dart';
+import 'package:hgtv_windows/bridge.dart';
+
+/// End-to-end check against the real loopback bridge. It needs a built bridge and a JDK, so
+/// it is opt-in and never runs as part of the default `flutter test`:
+///
+/// ```powershell
+/// $env:JAVA_HOME = 'C:\Program Files\Java\jdk-17'
+/// $env:HGTV_BRIDGE_DIR = 'bridge\build\install\bridge\lib'
+/// $env:HGTV_LIVE_BRIDGE = '1'
+/// flutter test test/live_bridge_test.dart
+/// ```
+///
+/// It verifies the parts the UI cannot show in a widget test: URL/token handling, JSON
+/// parsing for every screen, and range-seekable playback from the loopback video endpoint.
+void main() {
+  final enabled = Platform.environment['HGTV_LIVE_BRIDGE'] == '1';
+  test(
+    'live bridge serves feed, detail, play, comments and danmaku',
+    () async {
+      final bridge = await Bridge.launch();
+      final client = HttpClient();
+      try {
+        final api = Api(bridge);
+
+        final feed = await api.feed(refresh: true);
+        expect(feed.items, isNotEmpty, reason: '首页推荐应返回剧集');
+        final series = feed.items.first;
+        expect(series.title, isNotEmpty);
+
+        final detail = await api.detail(series.id);
+        expect(detail.series.id, series.id);
+        expect(detail.episodes, isNotEmpty, reason: '详情应包含选集');
+        expect(detail.episodes.length, greaterThan(1));
+
+        final related = await api.related(series.id);
+        for (final entry in related) {
+          expect(entry.series.id, isNotEmpty);
+        }
+
+        final page = await api.catalog('COMIC', page: 1);
+        expect(page.items, isNotEmpty);
+        expect(page.topics, isNotEmpty);
+
+        final rank = await api.rank('COMIC');
+        expect(rank.items, isNotEmpty);
+        expect(rank.positions, isNotEmpty);
+
+        final comments = await api.comments(series.id, detail.episodes.first);
+        expect(comments.comments.total >= comments.comments.items.length, isTrue);
+        final commentPage = await api.commentPage(series.id, detail.episodes.first, '');
+        expect(commentPage.total >= commentPage.items.length, isTrue);
+
+        final danmaku = await api.danmaku(
+          series.id,
+          detail.episodes.first,
+          startMs: 0,
+          durationMs: 600000,
+        );
+        expect(danmaku.nextMs, greaterThan(0));
+        // The window start may exceed one minute; passing the episode length (not a fixed
+        // 60 s) is what keeps danmaku loading for the rest of the episode.
+        final laterDanmaku = await api.danmaku(
+          series.id,
+          detail.episodes.first,
+          startMs: 90000,
+          durationMs: 600000,
+        );
+        expect(laterDanmaku.nextMs, greaterThan(90000));
+
+        // The play endpoint hands back a loopback URL; the player relies on it being
+        // seekable, so Range support is part of the contract.
+        final play = await api.play(detail.episodes.first, quality: 720);
+        expect(play.url, startsWith('http://127.0.0.1:'));
+        final request = await client.getUrl(Uri.parse(play.url));
+        request.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1023');
+        final response = await request.close();
+        expect(response.statusCode, anyOf(200, 206));
+        final bytes = await response.fold<int>(0, (sum, chunk) => sum + chunk.length);
+        expect(bytes, greaterThan(0), reason: '视频端点应返回数据');
+
+        // Auto-advance preloads the next episode; the following play must hit the
+        // warm slot and still serve seekable ranges.
+        await api.preload(detail.episodes[1], quality: 720);
+        final next = await api.play(detail.episodes[1], quality: 720);
+        expect(next.url, startsWith('http://127.0.0.1:'));
+        expect(next.quality, isNotEmpty);
+        final nextRequest = await client.getUrl(Uri.parse(next.url));
+        nextRequest.headers.set(HttpHeaders.rangeHeader, 'bytes=0-1023');
+        final nextResponse = await nextRequest.close();
+        expect(nextResponse.statusCode, anyOf(200, 206));
+        expect(
+          await nextResponse.fold<int>(0, (sum, chunk) => sum + chunk.length),
+          greaterThan(0),
+          reason: '预加载后的视频端点应返回数据',
+        );
+      } finally {
+        client.close(force: true);
+        await bridge.close();
+      }
+    },
+    timeout: const Timeout(Duration(minutes: 5)),
+    skip: enabled
+        ? false
+        : '设置 HGTV_LIVE_BRIDGE=1、JAVA_HOME 与 HGTV_BRIDGE_DIR 后单独运行',
+  );
+}

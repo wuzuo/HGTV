@@ -1,0 +1,41 @@
+# Local machine and IDE files
+.DS_Store
+.idea/
+*.iml
+local.properties
+
+# Build and dependency output
+.gradle/
+.kotlin/
+build/
+.dart_tool/
+dist/
+node_modules/
+.venv/
+__pycache__/
+*.py[cod]
+*.apk
+*.aab
+
+# Flutter/Dart local files
+desktop-windows-flutter/.flutter-plugins
+desktop-windows-flutter/.flutter-plugins-dependencies
+desktop-windows-flutter/windows/flutter/ephemeral/
+
+# Local credentials and signing material
+.env
+.env.*
+!.env.example
+*.jks
+*.keystore
+keystore.properties
+
+# Local captures and downloaded media
+/captures/
+/downloads/
+/tmp/
+
+# Delivery artifacts, native intermediates, local runtime
+/outputs/
+.cxx/
+.externalNativeBuild/
