@@ -18,7 +18,6 @@ ROOT = Path(__file__).resolve().parents[1]
 BUILD = 'kotlin-tv/app/build.gradle.kts'
 VERSION_FILES = [BUILD, 'README.md', 'kotlin-tv/README.md', 'AGENTS.md', 'kotlin-tv/RELEASE_NOTES.md']
 TOOLCHAIN = Path.home() / '.config/hgtv/release.json'
-GITCODE = 'https://gitcode.com/wuzuo/HGTV.git'
 
 
 def module(name, filename):
@@ -66,7 +65,7 @@ def source_version(text):
 def read_public(url, limit=80*1024*1024):
     host = urllib.parse.urlsplit(url).hostname or ''
     if urllib.parse.urlsplit(url).scheme != 'https' or not (
-        host in ('github.com', 'api.github.com', 'gitcode.com', 'api.gitcode.com') or host.endswith('.gitcode.com')):
+        host in ('github.com', 'api.github.com') or host.endswith('.githubusercontent.com')):
         raise Failure('Unexpected public asset host')
     try:
         with urllib.request.urlopen(urllib.request.Request(url, headers={'User-Agent': 'hgtv-release'}), timeout=120) as response:
@@ -154,9 +153,9 @@ def inventory(apis, override=None):
                 break
         else:
             raise Failure('Tag inventory too large')
-    latest = [api.api('/releases/latest'+('?type=latest' if name=='gitcode' else ''))['tag_name'] for name, api in apis.items()]
-    if len(set(latest))!=1:
-        raise Failure('Platforms have different Latest tags; resolve or resume the unfinished release first')
+    latest = {api.api('/releases/latest')['tag_name'] for api in apis.values()}
+    if len(latest) != 1:
+        raise Failure('Published Latest is inconsistent; resolve or resume the unfinished release first')
     source = source_version((ROOT/BUILD).read_text())
     version, code = select_version(source, [o[2] for o in observed], occupied, override)
     baseline = max(observed, key=lambda o: (o[2]['versionCode'], o[0]=='github'))
@@ -333,7 +332,7 @@ def merge(state, checkpoint, github):
     save(checkpoint, state)
 
 
-def sync_tags(state, tokens):
+def sync_tags(state):
     exists = subprocess.run(['git', 'show-ref', '--verify', '--quiet', 'refs/tags/'+state['tag']], cwd=ROOT).returncode==0
     if exists:
         if git('rev-parse', state['tag']+'^{}')!=state['source']:
@@ -341,20 +340,14 @@ def sync_tags(state, tokens):
     else:
         git('tag', '-a', state['tag'], state['source'], '-m', 'chore: 发布 TV '+state['version'])
     git('push', 'origin', 'refs/tags/'+state['tag'])
-    with tempfile.TemporaryDirectory(prefix='hgtv-git-auth-') as temp:
-        askpass = Path(temp)/'askpass'
-        askpass.write_text('#!/usr/bin/env python3\nimport os,sys\nprint("wuzuo" if "username" in sys.argv[1].lower() else os.environ["HGTV_PUSH_TOKEN"])\n')
-        askpass.chmod(0o700)
-        env = dict(os.environ, GIT_ASKPASS=str(askpass), GIT_TERMINAL_PROMPT='0', HGTV_PUSH_TOKEN=tokens['GITCODE_TOKEN'])
-        run(['git', '-c', 'credential.helper=', 'push', GITCODE, state['source']+':refs/heads/main', 'refs/tags/'+state['tag']], env)
-    for url in ('git@github.com:wuzuo/HGTV.git', GITCODE):
+    for url in ('origin',):
         refs = dict(line.split()[::-1] for line in git('ls-remote', url, 'refs/tags/'+state['tag'], 'refs/tags/'+state['tag']+'^{}').splitlines())
         if refs.get('refs/tags/'+state['tag']+'^{}', refs.get('refs/tags/'+state['tag']))!=state['source']:
             raise Failure('Remote tag source verification failed')
 
 
 def publish(state, checkpoint, tokens):
-    apis = {name: publisher.Publisher(name, tokens[name.upper()+'_TOKEN'], state['tag'], state['notes']) for name in ('github', 'gitcode')}
+    apis = {'github': publisher.Publisher(tokens['GITHUB_TOKEN'], state['tag'], state['notes'])}
     _, _, files = publisher.bundle(ROOT/state['directory'])
     checked = [(p, p.preflight()) for p in apis.values()]
     if not state.get('stagingStarted'):
@@ -387,7 +380,7 @@ def main():
     if args.resume and not args.publish:
         raise Failure('--resume requires --publish')
     tokens = publisher.credentials()
-    apis = {name: publisher.Publisher(name, tokens[name.upper()+'_TOKEN'], '', '') for name in ('github', 'gitcode')}
+    apis = {'github': publisher.Publisher(tokens['GITHUB_TOKEN'], '', '')}
     if args.resume:
         semver(args.resume)
         checkpoint = ROOT/'outputs/release-jobs'/args.resume/'state.json'
@@ -431,11 +424,11 @@ def main():
         merge(state, checkpoint, apis['github'])
     else:
         build(state, checkpoint, apis)
-    sync_tags(state, tokens)
+    sync_tags(state)
     publish(state, checkpoint, tokens)
     git('switch', 'main')
     git('merge', '--ff-only', state['source'])
-    print('双平台发布与 Latest 校验完成：'+state['tag']+'；记录：'+str(checkpoint))
+    print('GitHub Release 发布与 Latest 校验完成：'+state['tag']+'；记录：'+str(checkpoint))
 
 
 if __name__=='__main__':

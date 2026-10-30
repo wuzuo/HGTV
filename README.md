@@ -22,7 +22,6 @@
 | Android TV | 0.1.11 / versionCode 52 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
 | Windows | 0.1.0 | 便携 ZIP，由 CI 构件提供，未接入自动更新 |
 
-两端都是新工程：applicationId 与旧版 `io.github.wuzuo.guoyingtv` 不同，**不能通过旧版应用覆盖升级，本机数据与登录态也不会自动迁移**。需要重新安装并重新登录，账户收藏与历史从云端恢复。
 
 ## Android TV
 
@@ -86,9 +85,9 @@ powershell -ExecutionPolicy Bypass -File scripts\build-windows-flutter.ps1
 
 ## 发布
 
-TV 正式发布统一走 `python3 scripts/release-tv.py`：默认只读预演，明确发布时加 `--publish`。流程会规划版本号、创建版本 PR、跑一次构建检查、校验原签名，最后推送标签并上传附件到 GitHub 与 GitCode。环境、使用与限制见 [应用内更新与发布](kotlin-tv/AUTO_UPDATES.md)。
+TV 发布走标签：改好 `versionName` / `versionCode` 与 `kotlin-tv/RELEASE_NOTES.md` 后推到 main，再推 `kotlin-v<版本>` 标签，`Release TV APK` 工作流会自动签名打包、生成 `update.json`、建 GitHub Release 并设为 Latest，同时把 Windows ZIP 挂到同一个 Release。本地备用链是 `python3 scripts/release-tv.py`（默认只读预演，`--publish` 才动仓库）。所需 Secrets、手动分步与限制见 [应用内更新与发布](kotlin-tv/AUTO_UPDATES.md)。
 
-应用内更新读取 GitCode Releases（仓库常量在 `kotlin-tv/core/src/main/kotlin/com/hgtv/core/AppUpdates.kt`）。Windows 暂未接入自动更新，只用 CI 构件分发。
+应用内更新读取 GitHub Releases（仓库常量在 `kotlin-tv/core/src/main/kotlin/com/hgtv/core/AppUpdates.kt`）。Windows 暂未接入自动更新，从同一 Release 的 ZIP 附件下载。
 
 ## 开发约定
 

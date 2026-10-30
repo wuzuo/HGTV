@@ -17,7 +17,7 @@
 
 - TV 安装标识为 `io.github.wuzuo.hgtv`，Kotlin namespace 为 `com.hgtv.tv`；Windows 可执行文件为 `hgtv_windows.exe`。保持包名与签名连续性，不得随意更换。
 - 每次正式发布递增 `versionCode`；调试时保持 `versionCode`/`versionName` 不变，用文件名区分测试包。当前 TV 版本为 0.1.11（versionCode 52），只在下次正式发布时递增。
-- 应用内更新只读取 `wuzuo/HGTV` 的 Releases。源码推送或 CI 构件都不是发布，流程见 `kotlin-tv/AUTO_UPDATES.md`。
+- 应用内更新只读取 `wuzuo/HGTV` 的 GitHub Releases。源码推送或普通 CI 构件都不是发布；正式发布走 `kotlin-v*` 标签触发的 `Release TV APK` 工作流，所需签名 Secrets 见 `kotlin-tv/AUTO_UPDATES.md`。
 
 ## 检查与验证
 

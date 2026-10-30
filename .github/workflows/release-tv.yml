@@ -1,0 +1,156 @@
+name: Release TV APK
+
+# Publishing is tag-driven so the released APK always corresponds to one commit: bump
+# versionName/versionCode in kotlin-tv/app/build.gradle.kts, push that commit to main, then push
+# a `kotlin-v<versionName>` tag. Requires the signing secrets listed in kotlin-tv/AUTO_UPDATES.md.
+on:
+  push:
+    tags: ['kotlin-v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Existing tag to (re)publish, e.g. kotlin-v0.1.12'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-tv-${{ github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  tv:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
+        with:
+          packages: platform-tools
+
+      - run: sdkmanager 'platforms;android-36' 'build-tools;36.0.0'
+
+      - name: Resolve the tag being released
+        id: tag
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if ! printf '%s' "$tag" | grep -Eq '^kotlin-v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "::error::Release tags must look like kotlin-v0.1.12, got '$tag'"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Check signing secrets
+        env:
+          KEYSTORE: ${{ secrets.HGTV_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.HGTV_STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.HGTV_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.HGTV_KEY_PASSWORD }}
+        run: |
+          missing=""
+          [ -n "$KEYSTORE" ] || missing="$missing HGTV_KEYSTORE_BASE64"
+          [ -n "$STORE_PASSWORD" ] || missing="$missing HGTV_STORE_PASSWORD"
+          [ -n "$KEY_ALIAS" ] || missing="$missing HGTV_KEY_ALIAS"
+          [ -n "$KEY_PASSWORD" ] || missing="$missing HGTV_KEY_PASSWORD"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository secrets:$missing (Settings > Secrets and variables > Actions)"
+            exit 1
+          fi
+
+      - name: Decode signing keystore
+        env:
+          KEYSTORE: ${{ secrets.HGTV_KEYSTORE_BASE64 }}
+        run: |
+          printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/hgtv-release.jks"
+          echo "HGTV_KEYSTORE=$RUNNER_TEMP/hgtv-release.jks" >> "$GITHUB_ENV"
+
+      - name: Build signed release APK
+        env:
+          HGTV_STORE_PASSWORD: ${{ secrets.HGTV_STORE_PASSWORD }}
+          HGTV_KEY_ALIAS: ${{ secrets.HGTV_KEY_ALIAS }}
+          HGTV_KEY_PASSWORD: ${{ secrets.HGTV_KEY_PASSWORD }}
+        run: ./kotlin-tv/gradlew -p kotlin-tv :core:test :app:lintRelease :app:assembleRelease --console=plain
+
+      - name: Package updater bundle
+        env:
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: |
+          # The manifest must carry the same notes as release-notes.md; the app caps them at 1500.
+          python3 - "$TAG" <<'PY' > "$RUNNER_TEMP/notes.md"
+          import pathlib, subprocess, sys
+          source = pathlib.Path('kotlin-tv/RELEASE_NOTES.md')
+          if source.exists():
+              text = source.read_text(encoding='utf-8').strip()
+          else:
+              text = subprocess.run(['git', 'log', '-1', '--pretty=%B'], text=True,
+                                    capture_output=True, check=True).stdout.strip()
+          if not text:
+              text = 'HGTV ' + sys.argv[1].removeprefix('kotlin-v')
+          sys.stdout.write(text[:1500])
+          PY
+          python3 scripts/prepare-kotlin-release.py \
+            --apk kotlin-tv/app/build/outputs/apk/release/app-release.apk \
+            --aapt "$ANDROID_HOME/build-tools/36.0.0/aapt" \
+            --output outputs/releases --tag "$TAG" --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Publish GitHub Release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+        run: python3 scripts/publish-tv-release.py --directory "outputs/releases/$TAG" --publish
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: tv-release-${{ steps.tag.outputs.tag }}
+          path: outputs/releases/${{ steps.tag.outputs.tag }}/
+          retention-days: 14
+          if-no-files-found: error
+
+      # The keystore is only needed while Gradle runs.
+      - name: Remove signing keystore
+        if: always()
+        run: rm -f "$RUNNER_TEMP/hgtv-release.jks"
+
+  # The Windows client has no updater, so its ZIP rides along as an extra release asset for
+  # manual download. It must not fail an already published TV release, hence continue-on-error.
+  windows:
+    needs: tv
+    runs-on: windows-latest
+    timeout-minutes: 45
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.1'
+          cache: true
+      - name: Build portable ZIP
+        shell: cmd
+        run: powershell -ExecutionPolicy Bypass -File scripts\build-windows-flutter.ps1
+      - name: Attach ZIP to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.tv.outputs.tag }}
+        run: |
+          $zip = Get-ChildItem outputs\windows-flutter\*.zip | Select-Object -First 1
+          if (-not $zip) { throw 'The portable ZIP was not produced.' }
+          gh release upload $env:TAG $zip.FullName --clobber

@@ -95,7 +95,7 @@ class AppUpdatesTest {
     @Test
     fun downloadUrlUsesOnlyFixedRepositoryAndValidatedNames() {
         assertEquals(
-            "https://gitcode.com/wuzuo/HGTV/releases/download/kotlin-v0.9.0-build.1/hgtv-kotlin-0.9.0-build.1-android8.apk",
+            "https://github.com/wuzuo/HGTV/releases/download/kotlin-v0.9.0-build.1/hgtv-kotlin-0.9.0-build.1-android8.apk",
             update().downloadUrl,
         )
         for (value in

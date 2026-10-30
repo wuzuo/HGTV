@@ -39,7 +39,7 @@ class RunnerTests(unittest.TestCase):
     def test_default_plan_has_no_mutation_build_or_job_file(self):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp)
-            with patch.object(m,'ROOT',root), patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test','GITCODE_TOKEN':'test'}), \
+            with patch.object(m,'ROOT',root), patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test'}), \
                  patch.object(m,'inventory',return_value=dict(version='0.1.7',code=48,base='a'*40)), \
                  patch.object(m,'notes_for',return_value='notes'), patch.object(m,'prepare_commit') as prepare, \
                  patch.object(m,'build') as build, patch.object(m,'sync_tags') as tags, patch.object(m,'publish') as publish, \
@@ -49,7 +49,7 @@ class RunnerTests(unittest.TestCase):
                 self.assertFalse((root/'outputs').exists())
 
     def test_dirty_main_blocks_publish_before_remote_inventory(self):
-        with patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test','GITCODE_TOKEN':'test'}), \
+        with patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test'}), \
              patch.object(m,'git',side_effect=['main',' M README.md']), patch.object(m,'inventory') as inventory, \
              patch('sys.argv',['release-tv','--publish']):
             with self.assertRaises(m.Failure): m.main()
@@ -60,7 +60,7 @@ class RunnerTests(unittest.TestCase):
             root=Path(temp);checkpoint=root/'outputs/release-jobs/0.1.7/state.json';checkpoint.parent.mkdir(parents=True)
             state=dict(version='0.1.7',tag='kotlin-v0.1.7',prepared='a'*40,source='b'*40,built=True)
             checkpoint.write_text(json.dumps(state))
-            with patch.object(m,'ROOT',root), patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test','GITCODE_TOKEN':'test'}), \
+            with patch.object(m,'ROOT',root), patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test'}), \
                  patch.object(m,'git',return_value=''), patch.object(m,'inventory') as inventory, patch.object(m,'prepare_commit') as prepare, \
                  patch.object(m,'build') as build, patch.object(m,'sync_tags'), patch.object(m,'publish'), \
                  patch('sys.argv',['release-tv','--publish','--resume','0.1.7']):
@@ -71,14 +71,14 @@ class RunnerTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp:
             root=Path(temp);checkpoint=root/'outputs/release-jobs/0.1.7/state.json';checkpoint.parent.mkdir(parents=True)
             checkpoint.write_text(json.dumps(dict(version='0.1.7',complete=False)))
-            with patch.object(m,'ROOT',root), patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test','GITCODE_TOKEN':'test'}), \
+            with patch.object(m,'ROOT',root), patch.object(m.publisher,'credentials',return_value={'GITHUB_TOKEN':'test'}), \
                  patch.object(m,'inventory') as inventory, patch('sys.argv',['release-tv','--publish']):
                 with self.assertRaises(m.Failure): m.main()
                 inventory.assert_not_called()
 
     def test_local_tag_conflict_never_pushes(self):
         with patch.object(m.subprocess,'run',return_value=SimpleNamespace(returncode=0)), patch.object(m,'git',return_value='other') as git:
-            with self.assertRaises(m.Failure): m.sync_tags(dict(tag='kotlin-v0.1.7',source='expected'),{})
+            with self.assertRaises(m.Failure): m.sync_tags(dict(tag='kotlin-v0.1.7',source='expected'))
             self.assertFalse(any(c.args[0]=='push' for c in git.call_args_list))
 
     def test_published_manifest_identity_is_checked_and_legacy_suffix_is_supported(self):
@@ -182,21 +182,21 @@ class RunnerTests(unittest.TestCase):
                 m.build(state,root/'state.json',{});run.assert_not_called()
                 self.assertTrue(json.loads((root/'state.json').read_text())['built'])
 
-    def test_both_upload_platforms_preflight_before_any_release_creation(self):
-        github=Mock();gitcode=Mock();github.preflight.return_value=None;gitcode.preflight.side_effect=m.Failure('unavailable')
-        with patch.object(m.publisher,'Publisher',side_effect=[github,gitcode]), \
+    def test_preflight_failure_creates_no_release(self):
+        github=Mock();github.preflight.side_effect=m.Failure('unavailable')
+        with patch.object(m.publisher,'Publisher',side_effect=[github]), \
              patch.object(m.publisher,'bundle',return_value=('kotlin-v0.1.7','notes',[])):
             with self.assertRaises(m.Failure):
-                m.publish(dict(tag='kotlin-v0.1.7',notes='notes',directory='bundle'),Path('unused'),dict(GITHUB_TOKEN='test',GITCODE_TOKEN='test'))
-            github.stage.assert_not_called();gitcode.stage.assert_not_called()
+                m.publish(dict(tag='kotlin-v0.1.7',notes='notes',directory='bundle'),Path('unused'),dict(GITHUB_TOKEN='test'))
+            github.stage.assert_not_called()
 
     def test_unexpected_draft_appearing_after_plan_is_not_adopted(self):
-        github=Mock();gitcode=Mock();github.preflight.return_value=dict(id=1,draft=True);gitcode.preflight.return_value=None
-        with patch.object(m.publisher,'Publisher',side_effect=[github,gitcode]), \
+        github=Mock();github.preflight.return_value=dict(id=1,draft=True)
+        with patch.object(m.publisher,'Publisher',side_effect=[github]), \
              patch.object(m.publisher,'bundle',return_value=('kotlin-v0.1.7','notes',[])):
             with self.assertRaises(m.Failure):
-                m.publish(dict(tag='kotlin-v0.1.7',notes='notes',directory='bundle'),Path('unused'),dict(GITHUB_TOKEN='test',GITCODE_TOKEN='test'))
-            github.stage.assert_not_called();gitcode.stage.assert_not_called()
+                m.publish(dict(tag='kotlin-v0.1.7',notes='notes',directory='bundle'),Path('unused'),dict(GITHUB_TOKEN='test'))
+            github.stage.assert_not_called()
 
     def test_merged_tree_different_from_checked_tree_cannot_be_tagged(self):
         github=Mock();github.api.return_value=dict(merged=True,merge_commit_sha='b'*40)
