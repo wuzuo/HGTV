@@ -35,12 +35,14 @@ git push origin kotlin-v0.1.12
 
 | Secret | 内容 |
 | --- | --- |
-| `HGTV_KEYSTORE_BASE64` | 签名密钥库文件的 base64（`base64 -w0 release.jks`） |
+| `HGTV_KEYSTORE_BASE64` | 签名密钥库文件的 base64，单行无换行（`printf '%s' "$(base64 -w0 hgtv-release.jks)"`） |
 | `HGTV_STORE_PASSWORD` | 密钥库口令 |
-| `HGTV_KEY_ALIAS` | 密钥别名 |
+| `HGTV_KEY_ALIAS` | 密钥别名，当前为 `hgtv` |
 | `HGTV_KEY_PASSWORD` | 密钥口令 |
 
-必须使用原发布密钥，换新密钥会导致已安装用户无法覆盖升级。`GITHUB_TOKEN` 由 Actions 自带，工作流已声明 `contents: write`。密钥只在构建步骤内解码到 `$RUNNER_TEMP`，步骤结束后删除。
+当前发布签名为 `hgtv-release.jks`（别名 `hgtv`，RSA 2048，JKS，有效期至 2054-03-17，证书 SHA-256 `EF:1A:9E:7D:69:A9:F3:68:8F:C5:9D:9D:D5:96:65:FA:31:3D:A5:61:E8:2D:6C:E4:B6:FF:74:05:6F:79:FC:26`），2026-10-30 因旧库口令遗失重新生成。当时 `io.github.wuzuo.hgtv` 尚无任何对外发布（仓库无标签、无 Release），因此未影响已安装用户；旧库 `guoapp-release.jks` 对应旧包名 `com.hgtv.tv`，已废弃。
+
+自本次起必须持续使用同一密钥库并妥善保管私钥与口令：换新密钥会导致已安装用户无法覆盖升级，私钥丢失则无法再为已发布版本签名后续包。`GITHUB_TOKEN` 由 Actions 自带，工作流已声明 `contents: write`。密钥只在构建步骤内解码到 `$RUNNER_TEMP`，步骤结束后删除。
 
 ## 手动分步发布（排查用）
 
