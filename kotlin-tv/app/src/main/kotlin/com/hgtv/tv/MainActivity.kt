@@ -914,6 +914,16 @@ class MainActivity : Activity() {
                 }
         }
 
+    /**
+     * 账户状态短语：「账号 · 状态」。
+     *
+     * 未登录时 [AccountController.accountLabel] 与各状态文案都是「未登录」，
+     * 直接拼接会得到「未登录 · 未登录」，因此重复时只保留一份。
+     */
+    private fun accountStatus(status: String): String =
+        if (status == cloudAccount.accountLabel) status
+        else "${cloudAccount.accountLabel} · $status"
+
     // 内容页总入口：构建顶部导航，再根据当前栏目挂载首页、搜索或其他列表。
     private fun showCatalog(
         load: Boolean = false,
@@ -1235,17 +1245,18 @@ class MainActivity : Activity() {
                                 historyManage,
                                 { index -> manageHistory(rows[index].series, historyManage) },
                                 "清空本机记录",
-                            ) {
-                                tvTools.confirm(
-                                    "清空本机观看记录",
-                                    "只删除这台电视的观看进度，账户历史和本机收藏均保留。",
-                                    historyManage,
-                                ) {
-                                    library.clearHistory()
-                                    catalogFocus = ""
-                                    showCatalog()
-                                }
-                            }
+                                onExtra = {
+                                    tvTools.confirm(
+                                        "清空本机观看记录",
+                                        "只删除这台电视的观看进度，账户历史和本机收藏均保留。",
+                                        historyManage,
+                                    ) {
+                                        library.clearHistory()
+                                        catalogFocus = ""
+                                        showCatalog()
+                                    }
+                                },
+                            )
                         }
                         .apply { nextFocusUpId = nav[tab].id }
             }
@@ -1300,9 +1311,9 @@ class MainActivity : Activity() {
                 val note =
                     when {
                         isAccountFavorites() ->
-                            "${cloudAccount.accountLabel} · ${cloudAccount.favoriteState().message}\n与手机红果同步；长按剧集可管理账户收藏"
+                            "${accountStatus(cloudAccount.favoriteState().message)}\n与手机红果同步；长按剧集可管理账户收藏"
                         isAccountHistory() ->
-                            "${cloudAccount.accountLabel} · ${cloudAccount.historyStatus}\n显示当前账号最近 50 部云端记录，续播使用账号进度"
+                            "${accountStatus(cloudAccount.historyStatus)}\n显示当前账号最近 50 部云端记录，续播使用账号进度"
                         isLocalHistory() -> "只保存在这台电视，管理和清空不影响账户历史"
                         else -> "只保存在这台电视，不自动上传或合并到账户收藏"
                     }
@@ -1312,7 +1323,7 @@ class MainActivity : Activity() {
                 val state = cloudAccount.reservationState(reservationOnline)
                 container.addView(
                     text(
-                            "${cloudAccount.accountLabel} · ${state.message}\n每类读取最近 20 部预约，以下数量为当前已加载数",
+                            "${accountStatus(state.message)}\n每类读取最近 20 部预约，以下数量为当前已加载数",
                             13f,
                             muted,
                         )
@@ -2343,30 +2354,33 @@ class MainActivity : Activity() {
     // 组装设置页面；每个按钮的回调连接对应设置操作。
     private fun settings(parent: LinearLayout) {
         parent.addView(
-            text("按你的习惯播放", 25f, TvStyle.textStrong).apply {
+            text("按你的习惯播放", 23f, TvStyle.textStrong).apply {
                 typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
-                setPadding(0, dp(18), 0, dp(6))
+                setPadding(0, dp(6), 0, dp(4))
             }
         )
-        parent.addView(text("偏好自动保存，下一部剧继续使用。", 13f, muted).apply { setPadding(0, 0, 0, dp(18)) })
+        parent.addView(text("偏好自动保存，下一部剧继续使用。", 13f, muted).apply { setPadding(0, 0, 0, dp(12)) })
+        // 三列卡片：单列六行在 540dp 高的电视视口里放不下，会有一半内容被挡在屏幕外。
         val groups = row().apply { gravity = Gravity.TOP }
         val playback = column()
+        val personal = column()
         val device = column()
-        listOf(playback, device).forEachIndexed { i, group ->
-            group.setPadding(dp(18), dp(16), dp(18), dp(16))
+        val cards = listOf(playback, personal, device)
+        cards.forEachIndexed { i, group ->
+            group.setPadding(dp(16), dp(14), dp(16), dp(14))
             group.background = plate(TvStyle.surfaceHigh, TvStyle.RADIUS_DIALOG, band = TvStyle.SOFT_BAND_LARGE, depth = 1.05f)
             groups.addView(
                 group,
                 lp(0, -2).apply {
                     weight = 1f
-                    if (i == 0) rightMargin = dp(TvStyle.GAP_GROUP)
+                    if (i < cards.lastIndex) rightMargin = dp(TvStyle.GAP_GROUP)
                 },
             )
         }
         parent.addView(groups)
         fun heading(group: LinearLayout, title: String, subtitle: String) {
             group.addView(text(title, 18f, TvStyle.textStrong).apply { setTypeface(null, Typeface.BOLD) })
-            group.addView(text(subtitle, 12f, muted).apply { setPadding(0, dp(5), 0, dp(14)) })
+            group.addView(text(subtitle, 12f, muted).apply { setPadding(0, dp(4), 0, dp(10)) })
         }
         fun setting(group: LinearLayout, label: String, action: () -> Unit): TextView {
             val view =
@@ -2386,7 +2400,7 @@ class MainActivity : Activity() {
                         dp(18 + TvStyle.SOFT_BAND),
                         dp(TvStyle.SOFT_BAND) + dp(4),
                     )
-                    minimumHeight = dp(TvStyle.BUTTON_COMPACT + TvStyle.SOFT_BAND * 2 + 8)
+                    minimumHeight = dp(TvStyle.BUTTON_COMPACT + TvStyle.SOFT_BAND * 2 + 2)
                     fun paint(focused: Boolean) {
                         setTextColor(if (focused) TvStyle.onLit else TvStyle.text)
                         background =
@@ -2401,7 +2415,7 @@ class MainActivity : Activity() {
                     }
                     setOnClickListener { action() }
                 }
-            group.addView(view, lp(-1, -2).apply { bottomMargin = dp(10) })
+            group.addView(view, lp(-1, -2).apply { bottomMargin = dp(8) })
             return view
         }
         heading(playback, "播放偏好", "所有剧集共用，播放中也可调整")
@@ -2426,9 +2440,10 @@ class MainActivity : Activity() {
                 library.autoNext = !library.autoNext
                 autoNextButton.text = "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}"
             }
+        heading(personal, "外观与账户", "主题、登录与云端同步")
         lateinit var themeButton: TextView
         themeButton =
-            setting(playback, "界面主题  ·  ${TvStyle.theme.label}") {
+            setting(personal, "界面主题  ·  ${TvStyle.theme.label}") {
                 chooseTheme(themeButton)
             }
         heading(device, "应用与更新", "检查新版、查看开源信息")
@@ -2456,28 +2471,50 @@ class MainActivity : Activity() {
                 licenseDialog.show()
                 decorateDialog(licenseDialog)
             }
-        heading(playback, "红果账户", "账户收藏、历史与预约随账号同步")
-        val account = setting(playback, "登录与账户管理") { cloudAccount.show() }
-        val left = listOf(qualityButton, defaultSpeed, frame, autoNextButton, themeButton, account)
+        val account = setting(personal, "登录与账户管理") { cloudAccount.show() }
+        personal.addView(
+            text("登录红果后，收藏、历史与预约随账号同步。", 12f, muted).apply {
+                maxLines = 3
+                setPadding(dp(18), dp(2), dp(18), 0)
+            }
+        )
+        // 三列内容行数不同（4/2/3），统一成最高一列的高度，底边才不会参差。
+        groups.post {
+            val tallest = (0 until groups.childCount).maxOf { groups.getChildAt(it).height }
+            var changed = false
+            if (tallest > 0) {
+                for (i in 0 until groups.childCount) {
+                    val child = groups.getChildAt(i)
+                    if (child.height != tallest) {
+                        (child.layoutParams as LinearLayout.LayoutParams).height = tallest
+                        changed = true
+                    }
+                }
+            }
+            if (changed) groups.requestLayout()
+        }
+        val left = listOf(qualityButton, defaultSpeed, frame, autoNextButton)
+        val middle = listOf(themeButton, account)
         val right = listOf(updates, about, license)
-        listOf(left, right).forEach { items ->
+        val columns = listOf(left, middle, right)
+        columns.forEach { items ->
             items.forEachIndexed { index, view ->
                 view.nextFocusUpId = items.getOrNull(index - 1)?.id ?: nav[tab].id
                 view.nextFocusDownId = items.getOrNull(index + 1)?.id ?: view.id
             }
         }
-        left.forEachIndexed { i, v ->
-            v.nextFocusLeftId = v.id
-            v.nextFocusRightId = right[minOf(i, right.lastIndex)].id
-        }
-        right.forEachIndexed { i, v ->
-            v.nextFocusLeftId = left[minOf(i, left.lastIndex)].id
-            v.nextFocusRightId = v.id
+        columns.forEachIndexed { columnIndex, items ->
+            items.forEachIndexed { index, view ->
+                view.nextFocusLeftId =
+                    columns.getOrNull(columnIndex - 1)?.let { it[minOf(index, it.lastIndex)].id } ?: view.id
+                view.nextFocusRightId =
+                    columns.getOrNull(columnIndex + 1)?.let { it[minOf(index, it.lastIndex)].id } ?: view.id
+            }
         }
         nav.forEach { it.nextFocusDownId = qualityButton.id }
         parent.addView(
             text("HGTV  /  ${BuildConfig.VERSION_NAME}    ·    HGTV · 非官方客户端", 12f, muted)
-                .apply { setPadding(dp(2), dp(18), 0, dp(10)) }
+                .apply { setPadding(dp(2), dp(10), 0, dp(6)) }
         )
         nav[tab].requestFocus()
     }
@@ -2557,9 +2594,10 @@ class MainActivity : Activity() {
             anchor,
             { index -> runSearch(history[index].query) },
             "清空历史",
-        ) {
-            tvTools.confirm("清空搜索历史", "清除本机保存的搜索词？", anchor) { library.clearSearches() }
-        }
+            onExtra = {
+                tvTools.confirm("清空搜索历史", "清除本机保存的搜索词？", anchor) { library.clearSearches() }
+            },
+        )
     }
 
     private fun manageHistory(series: Series, anchor: View?) {
@@ -3949,6 +3987,7 @@ class MainActivity : Activity() {
                 if (anchor.tag != "playback-settings")
                     anchor.text = (if (inPlayer) "画面 " else "画面模式  ·  ") + library.frameMode.label
             },
+            selected = library.frameMode.ordinal,
         )
     }
 

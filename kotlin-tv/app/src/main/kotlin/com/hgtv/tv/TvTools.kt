@@ -101,6 +101,12 @@ class TvTools(private val activity: Activity) {
         next.getButton(AlertDialog.BUTTON_NEGATIVE).requestFocus()
     }
 
+    /**
+     * 单选清单。
+     *
+     * 传入 [selected] 时用单选列表，当前值带一个选中标记；
+     * 不传就是普通操作清单。两种形态的按钮与关闭行为保持一致。
+     */
     fun choose(
         title: String,
         labels: List<String>,
@@ -109,12 +115,18 @@ class TvTools(private val activity: Activity) {
         extra: String? = null,
         compact: Boolean = false,
         onExtra: () -> Unit = {},
+        selected: Int? = null,
     ) {
-        val builder =
-            AlertDialog.Builder(activity)
-                .setTitle(title)
-                .setItems(labels.toTypedArray()) { _, index -> onChoice(index) }
-                .setNegativeButton("取消", null)
+        val builder = AlertDialog.Builder(activity).setTitle(title)
+        if (selected == null) {
+            builder.setItems(labels.toTypedArray()) { _, index -> onChoice(index) }
+        } else {
+            builder.setSingleChoiceItems(labels.toTypedArray(), selected) { dialog, index ->
+                dialog.dismiss()
+                onChoice(index)
+            }
+        }
+        builder.setNegativeButton("取消", null)
         if (extra != null) builder.setNeutralButton(extra) { _, _ -> onExtra() }
         val next = builder.create()
         open(next, anchor)

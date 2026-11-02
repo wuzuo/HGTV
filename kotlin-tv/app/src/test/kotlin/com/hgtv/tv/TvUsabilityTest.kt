@@ -108,7 +108,7 @@ class TvUsabilityTest {
                 .invoke(activity, 6)
             val root = activity.findViewById<View>(android.R.id.content)
             val rows = texts(root)
-            listOf("播放偏好", "红果账户", "应用与更新").forEach { title ->
+            listOf("播放偏好", "外观与账户", "应用与更新").forEach { title ->
                 assertTrue(rows.any { it.text == title })
             }
             assertFalse(

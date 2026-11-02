@@ -260,8 +260,26 @@ internal class HomeFeedScreen(
         info.addView(intro)
         info.addView(Space(activity), lp(1, 0).apply { weight = 1f })
         info.addView(
-            label("↑ ↓  换一部\n确定  打开操作\n返回  顶部导航", 13f, TvStyle.muted).apply {
-                setLineSpacing(dp(6).toFloat(), 1f)
+            LinearLayout(activity).apply {
+                orientation = LinearLayout.VERTICAL
+                // 按键与说明分两列：按键固定宽度，说明才不会因为「↑ ↓」「确定」宽窄不一同列对不齐。
+                listOf("↑ ↓" to "换一部", "确定" to "打开操作", "返回" to "顶部导航")
+                    .forEach { (key, action) ->
+                        addView(
+                            LinearLayout(activity).apply {
+                                orientation = LinearLayout.HORIZONTAL
+                                gravity = Gravity.CENTER_VERTICAL
+                                addView(
+                                    label(key, 13f, TvStyle.textDim).apply {
+                                        minWidth = dp(48)
+                                        includeFontPadding = false
+                                    }
+                                )
+                                addView(label(action, 13f, TvStyle.muted))
+                            },
+                            lp(-2, -2).apply { topMargin = dp(5) },
+                        )
+                    }
             }
         )
         content.addView(info, lp(0, -1).apply { weight = 1f })
