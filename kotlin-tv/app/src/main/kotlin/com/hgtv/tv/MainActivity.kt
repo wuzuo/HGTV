@@ -51,6 +51,7 @@ class MainActivity : Activity() {
         object : Runnable {
             override fun run() {
                 if (screen != "player") return
+                if (!::playbackClock.isInitialized) return
                 playbackClock.text =
                     java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
                         .format(java.util.Date())
@@ -3036,6 +3037,22 @@ class MainActivity : Activity() {
         else play.requestFocus()
     }
 
+    /**
+     * 刷新播放页压在画面上的两处文字：左下标题与左上角集数。
+     *
+     * 播放页的视图可能还没建好（例如复用播放器切集、或自动化测试直接驱动队列），
+     * 所以这里逐个判断是否已创建，避免拿未初始化的视图去写文本。
+     */
+    private fun showEpisodeHud() {
+        val data = detail ?: return
+        if (::playbackTitle.isInitialized) {
+            playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex + 1} 集"
+        }
+        if (::playbackEpisode.isInitialized) {
+            playbackEpisode.text = "第 ${episodeIndex + 1} 集  /  共 ${data.episodes.size} 集"
+        }
+    }
+
     // 正式播放入口：准备指定剧集的播放资源与播放器状态。
     private fun playEpisode(
         index: Int,
@@ -3230,8 +3247,7 @@ class MainActivity : Activity() {
                 FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM),
             )
         }
-        playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        playbackEpisode.text = "第 ${episodeIndex+1} 集  /  共 ${data.episodes.size} 集"
+        showEpisodeHud()
         main.removeCallbacks(clockTick)
         main.post(clockTick)
         playbackText.text = "正在获取播放地址…"
@@ -3697,8 +3713,7 @@ class MainActivity : Activity() {
         prefetchAttemptAt = 0
         cancelRecovery()
         recovery.reset()
-        playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
-        playbackEpisode.text = "第 ${episodeIndex+1} 集  /  共 ${data.episodes.size} 集"
+        showEpisodeHud()
         controls.removeAllViews()
         controls.visibility = View.GONE
         panel = false
