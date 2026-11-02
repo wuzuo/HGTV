@@ -205,6 +205,9 @@ constructor(
         retryTransient: Boolean = false,
         client: OkHttpClient = http,
         retryEmptyPlayback: Boolean = false,
+        // 播放接口空响应时最多读几次（含首次）。换设备身份后的那次重试用更小的预算，
+        // 免得「身份不对」这种必然失败的情形把用户拦在加载动画里五六秒。
+        emptyPlaybackReads: Int = 3,
     ): String {
         val request =
             Request.Builder()
@@ -261,8 +264,10 @@ constructor(
                         e is java.net.UnknownHostException ||
                         (e is ContentHttpException && e.statusCode in setOf(500, 502, 503, 504))
                 val delay =
-                    if (e is EmptyPlaybackResponseException) listOf(700L, 1500L).getOrNull(retries)
-                    else if (retries == 0) 700L else null
+                    if (e is EmptyPlaybackResponseException) {
+                        if (retries >= emptyPlaybackReads - 1) null
+                        else listOf(700L, 1500L).getOrNull(retries)
+                    } else if (retries == 0) 700L else null
                 if (
                     !retryTransient ||
                         !temporary ||
@@ -657,6 +662,90 @@ constructor(
         else info
     }
 
+    /**
+     * 拉一次播放模型；空响应或「设备未被放行」时换一台设备身份再试。
+     *
+     * 平台的内容接口按 `device_id + install_id` 这一对匿名设备身份放行（见 [DeviceRegister]）。这类身份
+     * 每次启动只注册一次并一直复用，一旦服务端把它判成过期或限流，之后每个请求都只回 `200 + 0 字节`，
+     * 退避重试纯属白等——线上表现就是「播放信息接口返回空响应」，用户只能关掉应用重开（重新注册一台）。
+     * 这里主动丢弃缓存身份再注册一次，把「重启应用」这个动作收敛进一次播放请求里。
+     */
+    private fun playbackModel(ids: List<String>, id: String): JSONObject {
+        val payload =
+            """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
+                .toByteArray()
+        var rotations = 0
+        while (true) {
+            val identity = playbackSession.profile(http)
+            val query = Signer.encode(identity.values + ("_rticket" to clock().toString()))
+            val playerUrl =
+                "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$query"
+            val request =
+                Signer.Request(
+                    playerUrl,
+                    mapOf(
+                        "User-Agent" to
+                            "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+                        "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+                    ) +
+                        if (identity.cookie.isBlank()) emptyMap()
+                        else mapOf("Cookie" to identity.cookie),
+                    payload,
+                )
+            // 批量接口同次读取当前集和至多后两集，减少连续手动切集时的播放信息请求。
+            val response =
+                try {
+                    // 换过身份之后只留一次读取预算：身份不对时再等下去也没有意义。
+                    text(
+                        playerUrl,
+                        request,
+                        retryTransient = true,
+                        retryEmptyPlayback = true,
+                        emptyPlaybackReads = if (rotations == 0) 3 else 2,
+                    )
+                } catch (problem: EmptyPlaybackResponseException) {
+                    if (rotations >= PLAYBACK_IDENTITY_ROTATIONS) throw problem
+                    playbackSession.invalidate()
+                    rotations++
+                    continue
+                }
+            val data = JSONObject(response)
+            val code = data.optInt("Code", data.optInt("code", 0))
+            if (code != 0) {
+                if (code == PLAYBACK_DEVICE_REJECTED && rotations < PLAYBACK_IDENTITY_ROTATIONS) {
+                    playbackSession.invalidate()
+                    rotations++
+                    continue
+                }
+                throw IOException("播放接口暂不可用（错误码 $code）")
+            }
+            val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
+            val current =
+                map.optJSONObject(id)
+                    ?: (if (ids.size == 1)
+                        map.keys()
+                            .asSequence()
+                            .mapNotNull { map.optJSONObject(it) }
+                            .firstOrNull()
+                    else null)
+                    ?: throw IOException("播放信息为空")
+            synchronized(upcomingPlaybackModels) {
+                ids.drop(1).forEach { next ->
+                    map.optJSONObject(next)
+                        ?.takeIf { row ->
+                            val model = row.opt("video_model")
+                            (model is JSONObject || model is String && model.isNotBlank()) &&
+                                row.toString().toByteArray(Charsets.UTF_8).size <= 256 * 1024
+                        }
+                        ?.let { upcomingPlaybackModels[next] = UpcomingPlaybackModel(it, clock()) }
+                }
+                while (upcomingPlaybackModels.size > 6)
+                    upcomingPlaybackModels.remove(upcomingPlaybackModels.keys.first())
+            }
+            return current
+        }
+    }
+
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
@@ -669,67 +758,7 @@ constructor(
                 upcomingPlaybackModels.entries.removeAll { now - it.value.savedAt !in 0..60_000 }
                 upcomingPlaybackModels.remove(id)?.entry
             }
-        val entry =
-            cached
-                ?: run {
-                    val ids = (listOf(id) + metadataAhead).distinct()
-                    val payload =
-                        """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
-                            .toByteArray()
-                    val identity = playbackSession.profile(http)
-                    val query = Signer.encode(identity.values + ("_rticket" to clock().toString()))
-                    val playerUrl =
-                        "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$query"
-                    val request =
-                        Signer.Request(
-                            playerUrl,
-                            mapOf(
-                                "User-Agent" to
-                                    "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
-                                "Accept" to "application/json; charset=utf-8,application/x-protobuf",
-                            ) +
-                                if (identity.cookie.isBlank()) emptyMap()
-                                else mapOf("Cookie" to identity.cookie),
-                            payload,
-                        )
-                    // 批量接口同次读取当前集和至多后两集，减少连续手动切集时的播放信息请求。
-                    // 空响应按有界退避恢复；只更新请求时间戳，不轮换设备或账号身份。
-                    val response =
-                        text(playerUrl, request, retryTransient = true, retryEmptyPlayback = true)
-                    val data = JSONObject(response)
-                    val code = data.optInt("Code", data.optInt("code", 0))
-                    if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
-                    val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
-                    val current =
-                        map.optJSONObject(id)
-                            ?: (if (ids.size == 1)
-                                map.keys()
-                                    .asSequence()
-                                    .mapNotNull { map.optJSONObject(it) }
-                                    .firstOrNull()
-                            else null)
-                            ?: throw IOException("播放信息为空")
-                    synchronized(upcomingPlaybackModels) {
-                        ids.drop(1).forEach { next ->
-                            map.optJSONObject(next)
-                                ?.takeIf { row ->
-                                    val model = row.opt("video_model")
-                                    (model is JSONObject ||
-                                        model is String && model.isNotBlank()) &&
-                                        row.toString().toByteArray(Charsets.UTF_8).size <=
-                                            256 * 1024
-                                }
-                                ?.let {
-                                    upcomingPlaybackModels[next] =
-                                        UpcomingPlaybackModel(it, clock())
-                                }
-                        }
-                        while (upcomingPlaybackModels.size > 6) upcomingPlaybackModels.remove(
-                            upcomingPlaybackModels.keys.first()
-                        )
-                    }
-                    current
-                }
+        val entry = cached ?: playbackModel((listOf(id) + metadataAhead).distinct(), id)
         val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         // The current model already carries plain media URLs, dimensions and CENC keys.
         // Only use the legacy fallback endpoint when this shape has no usable rendition.
@@ -845,6 +874,12 @@ constructor(
     }
 
     companion object {
+        /** 播放模型一次请求里最多换几次设备身份（每次 = 重新注册一台，等价于重启应用）。 */
+        private const val PLAYBACK_IDENTITY_ROTATIONS = 1
+
+        /** 设备未被放行时平台给这个错误码，见 [DeviceRegister] 头注释。 */
+        private const val PLAYBACK_DEVICE_REJECTED = 101000
+
         fun extractRouter(html: String): JSONObject {
             val marker = html.indexOf("_ROUTER_DATA")
             if (marker < 0) throw IOException("页面没有内容数据")

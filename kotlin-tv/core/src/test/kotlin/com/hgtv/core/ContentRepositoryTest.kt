@@ -212,7 +212,9 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        assertEquals(3, calls)
+        // 原来的身份读 3 次，换一台设备后再读 2 次，然后才把原因交给界面：
+        // 「空响应」多半是这台设备不再被放行，光靠退避重试等不回来。
+        assertEquals(5, calls)
     }
 
     private fun inlinePlaybackFixture(): String =

@@ -130,6 +130,117 @@ class PlaybackDeviceSessionTest {
         assertEquals(2, calls)
     }
 
+    /**
+     * 空响应不是网络抖动，而是服务端不再认这台设备：必须换一台设备身份重试。
+     *
+     * 线上表现就是「播放信息接口返回空响应」，用户关掉应用重开（= 重新注册）才恢复。
+     * 这条用例锁住「客户端自己会做这件事」，并且确认 `cdid` 也一起换新（与重启后等价）。
+     */
+    @Test
+    fun emptyPlaybackResponseRotatesDeviceIdentityInsteadOfFailing() {
+        var registrations = 0
+        val devices = mutableListOf<String>()
+        val cdids = mutableListOf<String>()
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    val registration = request.url.encodedPath == "/service/2/device_register/"
+                    val body =
+                        if (registration) {
+                            val id = if (++registrations == 1) "111" else "222"
+                            """{"device_id":"$id","install_id":"$id"}"""
+                        } else {
+                            val device = request.url.queryParameter("device_id").orEmpty()
+                            devices += device
+                            cdids += request.url.queryParameter("cdid").orEmpty()
+                            // 第一台设备被服务端静默拒绝：200 + 0 字节。
+                            if (device == "111") "" else model
+                        }
+                    Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("fixture")
+                        .apply {
+                            if (registration) addHeader("Set-Cookie", "ttreq=test-only; Path=/")
+                        }
+                        .body(body.toResponseBody())
+                        .build()
+                }
+                .build()
+        val ladder = ContentRepository(http, playbackSession = PlaybackDeviceSession()).streamLadder("123")
+        assertEquals(listOf(720), ladder.renditions.map { it.quality })
+        assertEquals(2, registrations)
+        assertTrue("first attempts must use the original identity: $devices", devices.all { it == "111" || it == "222" })
+        assertEquals("222", devices.last())
+        assertTrue("rejected identity must be retried more than once: $devices", devices.count { it == "111" } >= 2)
+        assertEquals("cdid must be regenerated with the identity", 2, cdids.distinct().size)
+    }
+
+    /** 换了身份还是空响应，就到此为止：只换一次，然后把真实原因交给界面。 */
+    @Test
+    fun persistentEmptyResponseRotatesOnlyOnceThenReportsEmptyResponse() {
+        var registrations = 0
+        var models = 0
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    val registration = request.url.encodedPath == "/service/2/device_register/"
+                    val body =
+                        if (registration) {
+                            registrations++
+                            """{"device_id":"111","install_id":"111"}"""
+                        } else {
+                            models++
+                            ""
+                        }
+                    Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("fixture")
+                        .body(body.toResponseBody())
+                        .build()
+                }
+                .build()
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
+        assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
+        assertEquals(2, registrations)
+        assertEquals(3 + 2, models)
+    }
+
+    /** 设备未被放行（101000）同样换一次身份，不用等用户重启。 */
+    @Test
+    fun deviceRejectedCodeRotatesIdentityOnce() {
+        var registrations = 0
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val request = chain.request()
+                    val registration = request.url.encodedPath == "/service/2/device_register/"
+                    val body =
+                        if (registration) {
+                            val id = if (++registrations == 1) "111" else "222"
+                            """{"device_id":"$id","install_id":"$id"}"""
+                        } else if (request.url.queryParameter("device_id") == "111") {
+                            """{"Code":101000,"Message":"服务异常"}"""
+                        } else model
+                    Response.Builder()
+                        .request(request)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("fixture")
+                        .body(body.toResponseBody())
+                        .build()
+                }
+                .build()
+        val ladder = ContentRepository(http, playbackSession = PlaybackDeviceSession()).streamLadder("123")
+        assertEquals(listOf(720), ladder.renditions.map { it.quality })
+        assertEquals(2, registrations)
+    }
+
     @Test
     fun cancelledScopeDoesNotSendOrCacheRegistration() {
         var registrations = 0

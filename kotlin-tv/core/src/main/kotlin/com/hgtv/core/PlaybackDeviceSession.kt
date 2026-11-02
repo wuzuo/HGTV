@@ -35,8 +35,23 @@ class PlaybackDeviceSession(
 
     internal data class Profile(val values: Map<String, String>, val cookie: String)
 
-    private val cdid = UUID.randomUUID().toString()
+    private var cdid = UUID.randomUUID().toString()
     private var ready: Profile? = null
+
+    /**
+     * 丢弃缓存的设备身份，下次 [profile] 会重新注册一台。
+     *
+     * 平台按「`device_id` + `install_id`」这一对身份放行内容接口，而这对身份在进程内只注册一次。
+     * 一旦服务端把它判成过期或限流，之后每个播放请求都只回 `200 + 0 字节`，客户端再怎么退避重试
+     * 都没用——用户看到的就是「播放信息接口返回空响应」，**只有重启应用（等于重新注册）才恢复**。
+     * 现在由调用方在空响应时主动丢弃身份，把「重启应用」收敛成一次重试。
+     * `cdid` 一并换新，让新身份与重启后的状态完全等价。
+     */
+    @Synchronized
+    internal fun invalidate() {
+        ready = null
+        cdid = UUID.randomUUID().toString()
+    }
 
     @Synchronized
     internal fun profile(http: OkHttpClient): Profile {
