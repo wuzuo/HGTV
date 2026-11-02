@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -40,6 +41,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   int _index = 0;
   String _actualQuality = '';
+  // 本集实际可用的清晰度档位；空表示播放接口没给，菜单按通用档位展示。
+  List<int> _tiers = const [];
   bool _loading = true;
   bool _controlsVisible = true;
   bool _episodePanel = false;
@@ -55,6 +58,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   int _generation = 0;
   Timer? _hideTimer;
   Timer? _saveTimer;
+  // 常驻角落信息：左上角集数、右上角时钟。电视端同一套做法——不画胶囊底，
+  // 半透明文字直接压在画面上，靠一层淡投影保证亮镜头里也看得清。
+  Timer? _clockTimer;
+  String _clockText = '';
   DateTime _lastUpload = DateTime.fromMillisecondsSinceEpoch(0);
   bool _scrubbing = false;
   double _scrubValue = 0;
@@ -83,6 +90,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
   bool _danmakuLoading = false;
   int _danmakuFailedAt = 0;
 
+  /// 已经取到弹幕的时间轴游标（毫秒）。接口用 `nextMS` 指定下一段的起点，
+  /// 段与段之间可能隔着几十秒没有弹幕，按固定 30 秒切窗会反复请求同一段空列表。
+  int _danmakuCoveredTo = 0;
+
   DanmakuMode get _danmakuMode => widget.session.store.danmakuMode;
 
   /// 隐藏前的那一档：快捷开关只做「显示 ↔ 隐藏」，不把用户选的档位改回全屏。
@@ -96,6 +107,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _danmakuSettingsKey = _settingsKey();
     if (_danmakuMode.showsStyle) _lastVisibleMode = _danmakuMode;
     widget.session.store.addListener(_onDanmakuSettingsChanged);
+    _startClock();
     _index = widget.index.clamp(0, widget.detail.episodes.length - 1);
     _player = Player(configuration: const PlayerConfiguration(bufferSize: 32 * 1024 * 1024));
     _controller = VideoController(_player);
@@ -111,6 +123,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
           if (seeked) {
             _danmakuPages.clear();
             _danmaku = const [];
+            _danmakuCoveredTo = 0;
             _danmakuGeneration += 1;
           }
         });
@@ -149,6 +162,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _saveProgress();
     _saveTimer?.cancel();
     _hideTimer?.cancel();
+    _clockTimer?.cancel();
     _seamlessTimer?.cancel();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
@@ -164,6 +178,20 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
     unawaited(_player.dispose());
     super.dispose();
+  }
+
+  /// 时钟每分钟对齐刷新一次：对齐整分而不是每 60 秒轮询，画面上的时间才不会慢半分钟。
+  void _startClock() {
+    _clockTimer?.cancel();
+    _tickClock();
+  }
+
+  void _tickClock() {
+    final now = DateTime.now();
+    final text = '${now.hour.toString().padLeft(2, '0')}:${now.minute.toString().padLeft(2, '0')}';
+    if (mounted && text != _clockText) setState(() => _clockText = text);
+    final wait = 60000 - (now.second * 1000 + now.millisecond) + 200;
+    _clockTimer = Timer(Duration(milliseconds: wait), _tickClock);
   }
 
   String get _episodeId =>
@@ -196,6 +224,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _buffer = Duration.zero;
       _danmakuPages.clear();
       _danmaku = const [];
+      _danmakuCoveredTo = 0;
       _danmakuGeneration += 1;
       _danmakuFailedAt = 0;
     });
@@ -210,7 +239,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
         quality: widget.session.store.quality,
       );
       if (!mounted || generation != _generation) return;
-      setState(() => _actualQuality = result.quality);
+      setState(() {
+        _actualQuality = result.quality;
+        _tiers = result.tiers;
+      });
       await _player.open(
         Media(
           result.url,
@@ -459,10 +491,11 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ),
   );
 
-  /// 一次只排一个窗口，命中就返回：播放位置每几百毫秒推进一次，串行补窗口足够跟上。
+  /// 一次只排一段，命中就返回：播放位置每几百毫秒推进一次，串行补段足够跟上。
   ///
-  /// 窗口起点取当前位置所在的 30 秒格：贴近格尾时补下一格，靠近格头时回补上一格，
-  /// 这样跨格的那一刻画面上不会突然空一段。
+  /// 起点用「已覆盖游标」而不是当前位置对齐的 30 秒格：接口返回的 `nextMS` 才是
+  /// 下一段真正有弹幕的起点，中间的空档没必要反复问。反复请求空段会让画面长时间
+  /// 一条弹幕都没有，看起来像弹幕丢了。
   void _maybeLoadDanmaku() {
     if (!_danmakuMode.showsStyle || _danmakuLoading || _episodeId.isEmpty) return;
     final total = _duration.inMilliseconds;
@@ -471,27 +504,23 @@ class _PlayerScreenState extends State<PlayerScreen> {
     if (total <= 0) return;
     final now = _position.inMilliseconds;
     if (now >= total) return;
-    // 失败后歇 15 秒再试：弹幕是可选功能，接口不通时不能每秒都打一次请求。
+    // 失败后歇 4 秒再试：弹幕是可选功能，接口不通时不能每秒都打一次请求。
     if (_danmakuFailedAt != 0 &&
-        DateTime.now().millisecondsSinceEpoch - _danmakuFailedAt < 15000) {
+        DateTime.now().millisecondsSinceEpoch - _danmakuFailedAt < 4000) {
       return;
     }
-    final base = now ~/ 30000 * 30000;
-    final wanted = <int>{
-      base,
-      if (base > 0 && now - base < 15000) base - 30000,
-      if (now - base > 20000 && base + 30000 < total) base + 30000,
-    };
-    for (final start in wanted) {
-      if (start < 0 || start >= total) continue;
-      if (_danmakuPages.containsKey(start)) continue;
-      unawaited(_loadDanmaku(start, total));
-      return;
-    }
+    // 往回拖进度条或切集之后，游标要退回当前位置所在的那一段。
+    if (now + 60000 < _danmakuCoveredTo) _danmakuCoveredTo = now ~/ 30000 * 30000;
+    final from = math.max(_danmakuCoveredTo, now ~/ 30000 * 30000);
+    if (from >= total) return;
+    // 已经预取到 90 秒之外就先停手，别把整集的段一次性拉完。
+    if (from - now >= 90000) return;
+    if (_danmakuPages.containsKey(from)) return;
+    unawaited(_loadDanmaku(from, total));
   }
 
-  /// [durationMs] 是整集时长（等价于平台的 `playlet_item_duration`），不是这一窗的长度：
-  /// 本机服务按它校验时间轴并给出下一窗的起点。
+  /// [durationMs] 是整集时长（等价于平台的 `playlet_item_duration`），不是这一段的长度：
+  /// 本机服务按它校验时间轴并给出下一段的起点。
   Future<void> _loadDanmaku(int start, int durationMs) async {
     _danmakuLoading = true;
     final ticket = _danmakuGeneration;
@@ -506,6 +535,10 @@ class _PlayerScreenState extends State<PlayerScreen> {
       if (!mounted || episode != _episodeId || ticket != _danmakuGeneration) return;
       setState(() {
         _danmakuPages[start] = page.items;
+        // 接口给的下一段起点可能横跨几十秒；没给就按常规 30 秒推进，
+        // 但至少前进 5 秒，避免服务端返回原地不动的起点时空转。
+        final next = page.nextMs > start ? page.nextMs : start + 30000;
+        _danmakuCoveredTo = math.max(_danmakuCoveredTo, math.max(next, start + 5000));
         _pruneDanmakuPages(start);
         _danmaku = _mergedDanmaku();
       });
@@ -517,12 +550,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  /// 只留当前窗口前后各一到两格：整集九十多分钟全留着会让合并与重排越来越慢。
+  /// 只留当前段前后各一到两段：整集九十多分钟全留着会让合并与重排越来越慢。
   void _pruneDanmakuPages(int anchor) {
-    if (_danmakuPages.length <= 6) return;
+    if (_danmakuPages.length <= 8) return;
     final keys = _danmakuPages.keys.toList()
       ..sort((a, b) => (a - anchor).abs().compareTo((b - anchor).abs()));
-    for (final key in keys.skip(6)) {
+    for (final key in keys.skip(8)) {
       _danmakuPages.remove(key);
     }
   }
@@ -545,6 +578,7 @@ class _PlayerScreenState extends State<PlayerScreen> {
     setState(() {
       _danmakuPages.clear();
       _danmaku = const [];
+      _danmakuCoveredTo = 0;
       _danmakuGeneration += 1;
       _danmakuFailedAt = 0;
     });
@@ -728,11 +762,43 @@ class _PlayerScreenState extends State<PlayerScreen> {
         if (_loading) _loadingLayer(),
         if (!_loading && _seamless && _seamlessSlow) _seamlessSpinner(),
         if (_error != null) _errorLayer(),
+        _cornerHud(),
         _controlsLayer(episodeCount),
         if (_episodePanel) _episodePanelLayer(),
       ],
     ),
   );
+
+  /// 左上角集数、右上角时间常驻画面：控制层收起后也能一眼看到看到第几集、现在几点。
+  ///
+  /// 控制层展开时顶部已经有标题栏（含集数与清晰度），这时不叠第二遍。
+  Widget _cornerHud() {
+    final chromeVisible = !_seamless && (_controlsVisible || !_playing);
+    if (chromeVisible || _episodePanel) return const SizedBox.shrink();
+    const style = TextStyle(
+      color: Color(0xC6FFFFFF),
+      fontSize: 13,
+      shadows: [Shadow(color: Color(0x8C000000), blurRadius: 3, offset: Offset(0, 1))],
+    );
+    final total = widget.detail.episodes.length;
+    return Align(
+      alignment: Alignment.topCenter,
+      child: SafeArea(
+        bottom: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('第 ${_index + 1} 集  /  共 $total 集', style: style),
+              const Spacer(),
+              if (_clockText.isNotEmpty) Text(_clockText, style: style),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 
   Widget _miniPlayer() => Stack(
     fit: StackFit.expand,
@@ -1168,23 +1234,70 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ),
   );
 
-  Widget _qualityButton() => PopupMenuButton<int>(
-    tooltip: '清晰度',
-    color: const Color(0xFF1E2026),
-    initialValue: widget.session.store.quality,
-    onSelected: (value) => unawaited(_changeQuality(value)),
-    itemBuilder: (context) => [
-      for (final value in const [480, 720, 1080])
-        PopupMenuItem(
-          value: value,
-          child: Text('$value P', style: const TextStyle(color: Colors.white)),
-        ),
-    ],
-    child: Text(
-      _actualQuality.isEmpty ? '${widget.session.store.quality}P' : _actualQuality,
-      style: const TextStyle(color: Colors.white, fontSize: 13),
-    ),
-  );
+  /// 清晰度菜单：按本集实际档位列出，本集没有的档位标出来并置灰。
+  ///
+  /// 之前只给固定的 480/720/1080，片源只有 720 一档时选 1080 会静默回落，
+  /// 用户会以为「设了没生效」。
+  Widget _qualityButton() {
+    final requested = widget.session.store.quality;
+    final tiers = _tiers.isEmpty ? const [480, 720, 1080] : _tiers;
+    final options = <int>{...tiers, ...const [480, 720, 1080]}.toList()..sort();
+    final missingHint = _actualQuality.isNotEmpty &&
+        !_actualQuality.startsWith('${requested}P') &&
+        !_actualQuality.contains('兼容资源');
+    return PopupMenuButton<int>(
+      tooltip: '清晰度',
+      color: const Color(0xFF1E2026),
+      initialValue: requested,
+      onSelected: (value) {
+        if (!tiers.contains(value)) {
+          ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+            SnackBar(content: Text('本集没有 $value P，已保持当前清晰度')),
+          );
+          return;
+        }
+        unawaited(_changeQuality(value));
+      },
+      itemBuilder: (context) => [
+        if (missingHint)
+          PopupMenuItem<int>(
+            enabled: false,
+            height: 34,
+            child: Text(
+              '本集最高 $_actualQuality，已按此播放',
+              style: const TextStyle(color: Colors.white54, fontSize: 12),
+            ),
+          ),
+        for (final value in options)
+          PopupMenuItem(
+            value: value,
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  '$value P',
+                  style: TextStyle(
+                    color: tiers.contains(value) ? Colors.white : Colors.white38,
+                  ),
+                ),
+                if (!tiers.contains(value))
+                  const Padding(
+                    padding: EdgeInsets.only(left: 6),
+                    child: Text(
+                      '（本集没有）',
+                      style: TextStyle(color: Colors.white38, fontSize: 11),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+      ],
+      child: Text(
+        _actualQuality.isEmpty ? '${widget.session.store.quality}P' : _actualQuality,
+        style: const TextStyle(color: Colors.white, fontSize: 13),
+      ),
+    );
+  }
 
   Widget _episodePanelLayer() {
     final scheme = AppTheme.dark.colorScheme;

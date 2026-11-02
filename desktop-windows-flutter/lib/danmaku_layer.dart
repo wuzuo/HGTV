@@ -12,14 +12,14 @@ import 'models.dart';
 /// 横穿一屏的基准时长（秒）：速度 = 屏宽 / 这个基准，再乘档位系数。
 const double _baseScrollSeconds = 6;
 
-/// 全屏弹幕离顶边的安全边距。
-const double _topInset = 28;
+/// 全屏弹幕离顶边的安全边距：让开左上角的集数与右上角的时钟。
+const double _topInset = 42;
 
 /// 上方弹幕：整层只占画面高度的这一份，其余留白。
 const double _topModeShare = .25;
 
-/// 上方弹幕 / 只显一行离顶边留的安全边距。
-const double _topModeInset = 20;
+/// 上方弹幕 / 只显一行离顶边留的安全边距（同样让开常驻的角落信息）。
+const double _topModeInset = 42;
 
 /// 底部控制栏之上收住，弹幕不压进度条。
 const double _bottomInset = 112;

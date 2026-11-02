@@ -62,9 +62,12 @@ class DramaDetail {
 }
 
 class PlayResult {
-  const PlayResult({required this.url, required this.quality});
+  const PlayResult({required this.url, required this.quality, this.tiers = const []});
   final String url;
   final String quality;
+
+  /// 这一集实际可用的清晰度档位（升序）。空表示本机服务没给出，菜单按通用档位展示。
+  final List<int> tiers;
 }
 
 class CatalogPage {

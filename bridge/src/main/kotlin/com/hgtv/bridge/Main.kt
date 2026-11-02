@@ -27,7 +27,9 @@ fun main() {
     val lock=Any()
     var current: Pair<String,RemoteVideo>?=null
     val warmLock=Any()
-    data class WarmClip(val episode: String,val quality: Int,val actual: String,val video: RemoteVideo)
+    // tiers：这一集实际可用的清晰度档位（升序）。播放器菜单据此标出「本集没有」的档位，
+    // 不让用户以为切清晰度没生效。
+    data class WarmClip(val episode: String,val quality: Int,val actual: String,val video: RemoteVideo,val tiers: List<Int>)
     var warmed: WarmClip?=null
     fun json(exchange: HttpExchange, value: JSONObject, status: Int=200) {
         val bytes=value.toString().toByteArray(Charsets.UTF_8)
@@ -37,11 +39,30 @@ fun main() {
         exchange.responseBody.use { it.write(bytes) }
     }
     /** Resolves an episode and buffers its first [warmBytes] so a later play call is instant. */
+    /** 档位排序：升序去重，只保留正数档。 */
+    fun tiersOf(ladder: StreamLadder): List<Int> =
+        ladder.renditions.map{it.quality}.filter{it>0}.distinct().sorted()
+
+    data class PickedStream(val info: StreamInfo, val tiers: List<Int>)
+
+    /**
+     * 选档。等价于 [ContentRepository.stream]，只是把整条清晰度链路一起留下来，
+     * 免得为了拿档位再请求一次播放信息。
+     */
+    fun pickStream(episode: String, quality: Int): PickedStream {
+        val ladder=repository.streamLadder(episode)
+        val selected=ladder.select(quality) ?: error("没有可播放的清晰度，请稍后再试或选择其他剧集")
+        val info=selected.toStreamInfo().let {
+            if(selected.quality>quality) it.copy(quality=it.quality+"（兼容资源）") else it
+        }
+        return PickedStream(info,tiersOf(ladder))
+    }
+
     fun prepareClip(episode: String, quality: Int, warmBytes: Int): WarmClip {
-        val stream=repository.stream(episode,quality)
-        val clip=RemoteVideo(repository.http,stream)
+        val picked=pickStream(episode,quality)
+        val clip=RemoteVideo(repository.http,picked.info)
         try { clip.warm(warmBytes) } catch(problem: Exception) { clip.close();throw problem }
-        return WarmClip(episode,quality,stream.quality,clip)
+        return WarmClip(episode,quality,picked.info.quality,clip,picked.tiers)
     }
     fun keepWarmed(prepared: WarmClip) {
         synchronized(lock) {
@@ -126,15 +147,15 @@ fun main() {
                         warmed?.takeIf { it.episode==query["id"] && it.quality==quality }?.also { warmed=null }
                     }
                     val prepared=cached ?: run {
-                        val stream=repository.stream(query["id"].orEmpty(),quality)
-                        val clip=RemoteVideo(repository.http,stream)
+                        val picked=pickStream(query["id"].orEmpty(),quality)
+                        val clip=RemoteVideo(repository.http,picked.info)
                         try { clip.prepare() } catch(problem: Exception) { clip.close();throw problem }
-                        WarmClip(query["id"].orEmpty(),quality,stream.quality,clip)
+                        WarmClip(query["id"].orEmpty(),quality,picked.info.quality,clip,picked.tiers)
                     }
                     val clip=prepared.video
                     val id=UUID.randomUUID().toString()
                     synchronized(lock) { current?.second?.close();current=id to clip }
-                    json(exchange,JSONObject().put("url","http://127.0.0.1:${server.address.port}/$token/video?id=$id").put("quality",prepared.actual))
+                    json(exchange,JSONObject().put("url","http://127.0.0.1:${server.address.port}/$token/video?id=$id").put("quality",prepared.actual).put("tiers",JSONArray(prepared.tiers)))
                 }
                 "stop" -> { synchronized(lock) { current?.second?.close();current=null;warmed?.video?.close();warmed=null };json(exchange,JSONObject().put("ok",true)) }
                 "video" -> {

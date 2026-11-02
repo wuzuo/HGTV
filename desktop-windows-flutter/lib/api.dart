@@ -84,7 +84,16 @@ class Api {
     if (!url.startsWith('http://127.0.0.1:')) {
       throw BridgeException('播放地址无效，请重试。');
     }
-    return PlayResult(url: url, quality: value['quality'] as String? ?? '');
+    final tiers = (value['tiers'] as List<dynamic>?)
+            ?.map((item) => (item as num).toInt())
+            .where((item) => item > 0)
+            .toList() ??
+        const <int>[];
+    return PlayResult(
+      url: url,
+      quality: value['quality'] as String? ?? '',
+      tiers: tiers,
+    );
   }
 
   /// Warms the first few megabytes of [episodeId] in the bridge so the matching

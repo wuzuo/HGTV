@@ -1340,7 +1340,24 @@ class MainActivity : Activity() {
                         isLocalHistory() -> "只保存在这台电视，管理和清空不影响账户历史"
                         else -> "只保存在这台电视，不自动上传或合并到账户收藏"
                     }
-                container.addView(text(note, 13f, muted).apply { setPadding(0, 0, 0, dp(6)) })
+                // 说明文字并到「本机/账户」切换行右侧：单独占一行要吃掉 24dp 高度，
+                // 而网格本来就装不下一整张卡片。账户态的第二行仍留在下面，它讲的是同步规则。
+                val noteLines = note.lines()
+                sources.addView(
+                    text(noteLines.first(), 12.5f, muted).apply {
+                        maxLines = 1
+                        ellipsize = TextUtils.TruncateAt.END
+                        gravity = Gravity.END or Gravity.CENTER_VERTICAL
+                        setPadding(dp(18), 0, 0, 0)
+                    },
+                    lp(0, -2).apply { weight = 1f },
+                )
+                if (noteLines.size > 1) {
+                    container.addView(
+                        text(noteLines.drop(1).joinToString(" "), 13f, muted)
+                            .apply { setPadding(0, 0, 0, dp(6)) }
+                    )
+                }
             }
             if (tab == 5) {
                 val state = cloudAccount.reservationState(reservationOnline)
@@ -1515,9 +1532,15 @@ class MainActivity : Activity() {
             renderContinuousDiscovery(body, focusNav, focusType)
             return
         }
-        val preview = SeriesPreview(this)
-        selectionPreview = preview
-        body.addView(preview)
+        // 收藏 / 历史 / 预约三页的卡片自己就带标题和进度，上方那条预览只是重复，
+        // 却要吃掉 80dp 高度 —— 让出来之后网格视口才装得下一整张卡片。
+        val preview: SeriesPreview? =
+            if (tab in 3..5) null
+            else
+                SeriesPreview(this).also {
+                    selectionPreview = it
+                    body.addView(it)
+                }
         val scroll =
             ScrollView(this).apply {
                 isFillViewport = false
@@ -1740,7 +1763,7 @@ class MainActivity : Activity() {
                     if (focused) {
                         catalogFocus = item.id
                         loadCover(image, item.cover)
-                        preview.show(item, selectionStatus(item))
+                        preview?.show(item, selectionStatus(item))
                         if (!restoringScroll)
                             scroll.post {
                                 scroll.smoothScrollTo(
@@ -1909,8 +1932,11 @@ class MainActivity : Activity() {
         scroll.post {
             if (catalogScroll !== scroll) return@post
             // 一行要先装得下才裁海报：先让出第二行标题和长副标题，再才压缩海报高度。
+            // 但「装得下」不能以把卡片压变形为代价：海报最多缩到原高度的八成，
+            // 缩到这个下限还塞不进视口时，宁可让列表滚动，也保留完整的两行标题和副标题。
             val rowCap = (scroll.height - dp(8)).coerceAtLeast(dp(120))
             val posterHeight = ((width - dp(12)) / TvStyle.POSTER_ASPECT).toInt()
+            val posterFloor = (posterHeight * .8f).toInt()
             cards.forEachIndexed { index, view ->
                 val card = view as LinearLayout
                 val image = card.getChildAt(0)
@@ -1933,7 +1959,13 @@ class MainActivity : Activity() {
                     if (titleLines > 1) titleLines-- else badgeLines--
                 }
                 var poster = posterHeight
-                if (poster + textHeight() > rowCap) poster = (rowCap - textHeight()).coerceAtLeast(dp(60))
+                if (poster + textHeight() > rowCap) poster = (rowCap - textHeight())
+                if (poster < posterFloor) {
+                    // 视口放不下这一行（历史页上方内容多时就是这种情况）：恢复原始行数与海报高度。
+                    titleLines = title.maxLines
+                    badgeLines = badge.maxLines
+                    poster = posterHeight
+                }
                 if (title.maxLines != titleLines) {
                     title.minLines = titleLines
                     title.maxLines = titleLines
@@ -1949,20 +1981,47 @@ class MainActivity : Activity() {
             scroll.post settle@{
                 if (catalogScroll !== scroll) return@settle
                 savedScroll?.let { scroll.scrollTo(0, it) }
-                (cards.firstOrNull { it.hasFocus() }?.parent as? View)?.let { line ->
-                    val y =
-                        when {
-                            line.top < scroll.scrollY -> line.top
-                            line.bottom > scroll.scrollY + scroll.height ->
-                                if (line.height >= scroll.height) line.top
-                                else line.bottom - scroll.height
-                            else -> scroll.scrollY
-                        }
-                    scroll.scrollTo(0, y.coerceAtLeast(0))
-                }
+                revealFocusedRow(scroll, cards)
                 restoringScroll = false
             }
+            // 上面刚改过海报与文字行数，这一帧的布局还是旧尺寸；等布局落定后再对一次焦，
+            // 否则历史页这种视口很矮的页面会把聚焦卡片停在屏幕外只露一角。
+            (cards.firstOrNull()?.parent as? View)?.let { line ->
+                line.addOnLayoutChangeListener(
+                    object : View.OnLayoutChangeListener {
+                        override fun onLayoutChange(
+                            v: View,
+                            left: Int,
+                            top: Int,
+                            right: Int,
+                            bottom: Int,
+                            oldLeft: Int,
+                            oldTop: Int,
+                            oldRight: Int,
+                            oldBottom: Int,
+                        ) {
+                            v.removeOnLayoutChangeListener(this)
+                            if (catalogScroll !== scroll) return
+                            revealFocusedRow(scroll, cards)
+                        }
+                    }
+                )
+            }
         }
+    }
+
+    /** 把带焦点的那一行滚进视口；一行比视口还高时优先露出海报顶端。 */
+    private fun revealFocusedRow(scroll: ScrollView, cards: List<View>) {
+        val line = (cards.firstOrNull { it.hasFocus() }?.parent as? View) ?: return
+        val y =
+            when {
+                line.top < scroll.scrollY -> line.top
+                line.bottom > scroll.scrollY + scroll.height ->
+                    if (line.height >= scroll.height) line.top
+                    else line.bottom - scroll.height
+                else -> scroll.scrollY
+            }
+        scroll.scrollTo(0, y.coerceAtLeast(0))
     }
 
     private fun renderContinuousDiscovery(
@@ -3168,16 +3227,19 @@ class MainActivity : Activity() {
             social.attach(root)
             val topInfo =
                 row().apply {
-                    val badge = TvStyle.shape(this@MainActivity, 0x99000000.toInt(), radius = TvStyle.RADIUS_PILL)
+                    // 不画胶囊：直接把半透明文字压在画面上，避免在亮色镜头里出现一块突兀的黑底。
+                    // 为了在白色或高光画面上仍然看得清，用一层很淡的投影把字托起来。
+                    val corner =
+                        (0xC6 shl 24) or (TvStyle.playerText and 0x00FFFFFF)
                     playbackEpisode =
-                        text("", 13f, playerWhite).apply {
-                            setPadding(dp(12), dp(5), dp(12), dp(5))
-                            background = badge
+                        text("", 13.5f, corner).apply {
+                            includeFontPadding = false
+                            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), 0x8C000000.toInt())
                         }
                     playbackClock =
-                        text("", 13f, playerWhite).apply {
-                            setPadding(dp(12), dp(5), dp(12), dp(5))
-                            background = badge
+                        text("", 13.5f, corner).apply {
+                            includeFontPadding = false
+                            setShadowLayer(dp(3).toFloat(), 0f, dp(1).toFloat(), 0x8C000000.toInt())
                         }
                     addView(playbackEpisode, lp(-2, -2))
                     addView(View(this@MainActivity), lp(0, 1).apply { weight = 1f })
