@@ -52,14 +52,14 @@ internal class DanmakuView(context: Context) : View(context), DanmakuEmojiStore.
         /** 横穿一屏的基准时长（秒）：速度 = 屏宽 / 这个基准，再乘档位系数。 */
         const val BASE_SCROLL_SECONDS = 6f
 
-        /** 全屏弹幕离顶边的安全边距，躲开电视过扫描。 */
-        const val TOP_INSET_DP = 28
+        /** 全屏弹幕离顶边的安全边距：给左上角集数、右上角时钟和电视过扫描留位置。 */
+        const val TOP_INSET_DP = 42
 
         /** 上方弹幕：整层只占屏幕高度的这一份，其余留白。 */
         const val TOP_MODE_SHARE = .25f
 
-        /** 上方弹幕 / 只显一行离顶边留的安全边距。 */
-        const val TOP_MODE_INSET_DP = 20
+        /** 上方弹幕 / 只显一行离顶边留的安全边距；同样要让开顶部的集数与时钟。 */
+        const val TOP_MODE_INSET_DP = 42
 
         /** 底部控制层之上收住，弹幕不压进度条。 */
         const val BOTTOM_INSET_DP = 112
@@ -325,6 +325,11 @@ internal class DanmakuView(context: Context) : View(context), DanmakuEmojiStore.
                 lines += Line(start, duration, width, lane, parts)
             }
         lines.sortBy { it.start }
+        android.util.Log.i(
+            "HGTV",
+            "Danmaku schedule raw=${raw.size} groups=${groups.size} lanes=$lanes " +
+                "planned=${lines.size} highlights=${highlights.size} now=${positionMillis()}",
+        )
     }
 
     /** 把 [from] 到 `from + duration` 这段区间里所有「中央占着轨道」的时间段让过去。 */

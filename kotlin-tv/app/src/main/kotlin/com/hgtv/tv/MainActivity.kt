@@ -40,6 +40,24 @@ class MainActivity : Activity() {
     // 播放界面压在视频画面上，固定暖白文字 + 黑压暗层，不跟主题切换。
     private val playerWhite get() = TvStyle.playerText
     private val main = Handler(Looper.getMainLooper())
+
+    /**
+     * 右上角时钟：每分钟对齐刷新一次。
+     *
+     * 电视上看片时抬头看时间是很自然的动作，而底部的控制层要按键才出现，
+     * 所以这个时钟单独压在画面上，一直亮着；离开播放页就停止。
+     */
+    private val clockTick =
+        object : Runnable {
+            override fun run() {
+                if (screen != "player") return
+                playbackClock.text =
+                    java.text.SimpleDateFormat("HH:mm", java.util.Locale.getDefault())
+                        .format(java.util.Date())
+                val now = System.currentTimeMillis()
+                main.postDelayed(this, 60_000L - now % 60_000L + 200L)
+            }
+        }
     private val io = Executors.newFixedThreadPool(3)
     private val repository = ContentRepository(playbackSession = PlaybackDeviceSession.shared)
     // 榜单专用并行加载通道：最多四榜各自在途、互不取消，与全局单飞 work() 隔离。
@@ -85,6 +103,10 @@ class MainActivity : Activity() {
     private var workJob: java.util.concurrent.Future<*>? = null
     private var playerListener: Player.Listener? = null
     private lateinit var playbackTitle: TextView
+
+    /** 播放页常驻左上角的集数标签与右上角的时钟；都压在画面之上，不进底部控制层。 */
+    private lateinit var playbackEpisode: TextView
+    private lateinit var playbackClock: TextView
     private var directPlayback = false
     private var collection: String? = null
     private var collectionReturn: CatalogState? = null
@@ -3127,6 +3149,32 @@ class MainActivity : Activity() {
             playerView = view
             root.addView(view, FrameLayout.LayoutParams(-1, -1))
             social.attach(root)
+            val topInfo =
+                row().apply {
+                    val badge = TvStyle.shape(this@MainActivity, 0x99000000.toInt(), radius = TvStyle.RADIUS_PILL)
+                    playbackEpisode =
+                        text("", 13f, playerWhite).apply {
+                            setPadding(dp(12), dp(5), dp(12), dp(5))
+                            background = badge
+                        }
+                    playbackClock =
+                        text("", 13f, playerWhite).apply {
+                            setPadding(dp(12), dp(5), dp(12), dp(5))
+                            background = badge
+                        }
+                    addView(playbackEpisode, lp(-2, -2))
+                    addView(View(this@MainActivity), lp(0, 1).apply { weight = 1f })
+                    addView(playbackClock, lp(-2, -2))
+                }
+            root.addView(
+                topInfo,
+                FrameLayout.LayoutParams(-1, -2, Gravity.TOP).apply {
+                    val side = dp(widthDp() * .05f)
+                    leftMargin = side
+                    rightMargin = side
+                    topMargin = dp(14)
+                },
+            )
             hud =
                 column().apply {
                     setPadding(
@@ -3183,6 +3231,9 @@ class MainActivity : Activity() {
             )
         }
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
+        playbackEpisode.text = "第 ${episodeIndex+1} 集  /  共 ${data.episodes.size} 集"
+        main.removeCallbacks(clockTick)
+        main.post(clockTick)
         playbackText.text = "正在获取播放地址…"
         progressBar.progress = 0
         progressBar.visibility = View.VISIBLE
@@ -3228,6 +3279,11 @@ class MainActivity : Activity() {
                 currentTrack = opened.track
                 currentRendition = opened.rendition
                 currentTiers = opened.tiers
+                android.util.Log.i(
+                    "HGTV",
+                    "Quality requested=${maxQuality}P chosen=${opened.rendition?.quality} " +
+                        "tiers=${opened.tiers.map { it.quality }} label=$quality episode=${episodeIndex+1}",
+                )
                 val p =
                     player
                         ?: run {
@@ -3642,6 +3698,7 @@ class MainActivity : Activity() {
         cancelRecovery()
         recovery.reset()
         playbackTitle.text = "${data.series.title}  ·  第 ${episodeIndex+1} 集"
+        playbackEpisode.text = "第 ${episodeIndex+1} 集  /  共 ${data.episodes.size} 集"
         controls.removeAllViews()
         controls.visibility = View.GONE
         panel = false
@@ -3724,7 +3781,11 @@ class MainActivity : Activity() {
     private fun playedQualityLabel(opened: OpenedStream, maxQuality: Int): String {
         val rendition = opened.rendition ?: return opened.video.info.quality
         val label = if (rendition.quality > 0) "${rendition.quality}P" else "自动"
-        if (rendition.quality > maxQuality) return label + "（兼容资源）"
+        if (rendition.quality > maxQuality)
+            // 分清两种「不是你要的那档」：这一集根本没这条链路，还是设备解不了那条链路。
+            return if (opened.tiers.none { it.quality == maxQuality })
+                "$label（本集无 ${maxQuality}P）"
+            else "$label（兼容资源）"
         val ideal = opened.tiers.filter { it.quality in 1..maxQuality }.maxOfOrNull { it.quality }
         return if (ideal != null && rendition.quality < ideal) label + "（自动降清）" else label
     }
@@ -4127,11 +4188,27 @@ class MainActivity : Activity() {
 
     private fun showQualityPicker(anchor: TextView, inPlayer: Boolean) {
         val options = PlaybackQuality.options
+        // 有些剧每集只给一条 1080P 的链路，选了更低也变不出来——标题里先把这一集的实情说清楚。
+        val offered =
+            currentTiers
+                .map { it.quality }
+                .filter { it > 0 }
+                .distinct()
+                .sortedDescending()
+        val title =
+            if (inPlayer && offered.isNotEmpty())
+                "全局默认清晰度 · 本集 ${offered.joinToString("/") { "${it}P" }}"
+            else "全局默认清晰度"
         val dialog =
             AlertDialog.Builder(this)
-                .setTitle("全局默认清晰度")
+                .setTitle(title)
                 .setSingleChoiceItems(
-                    options.map { "${it}P" }.toTypedArray(),
+                    options.map { quality ->
+                        val label = "${quality}P"
+                        if (inPlayer && offered.isNotEmpty() && quality !in offered)
+                            "$label（本集没有）"
+                        else label
+                    }.toTypedArray(),
                     options.indexOf(library.maxQuality),
                 ) { popup, index ->
                     val target = options[index]
@@ -4140,12 +4217,24 @@ class MainActivity : Activity() {
                     popup.dismiss()
                     if (anchor.tag != "playback-settings")
                         anchor.text = (if (inPlayer) "清晰度 " else "默认清晰度  ·  ") + "${target}P"
-                    if (inPlayer && changed)
-                        playEpisode(
-                            episodeIndex,
-                            currentPosition(),
-                            player?.playWhenReady ?: requestedAutoplay,
-                        )
+                    if (inPlayer && changed) {
+                        if (offered.isNotEmpty() && target !in offered) {
+                            // 这一集没有这条链路，重开只会回到同一档，白跳一次进度；
+                            // 偏好照样存下来，换到有这条链路的集时生效。
+                            Toast.makeText(
+                                    this,
+                                    "本集只提供 ${offered.joinToString("/") { "${it}P" }}，已设为默认清晰度",
+                                    Toast.LENGTH_LONG,
+                                )
+                                .show()
+                        } else {
+                            playEpisode(
+                                episodeIndex,
+                                currentPosition(),
+                                player?.playWhenReady ?: requestedAutoplay,
+                            )
+                        }
+                    }
                 }
                 .setNegativeButton("取消", null)
                 .create()
@@ -4271,6 +4360,7 @@ class MainActivity : Activity() {
         sleepButton = null
         closeTransport(playbackHttp)
         playbackHttp = null
+        main.removeCallbacks(clockTick)
         window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
     }
 

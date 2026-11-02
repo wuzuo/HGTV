@@ -270,14 +270,14 @@ internal class HomeFeedScreen(
                                 orientation = LinearLayout.HORIZONTAL
                                 gravity = Gravity.CENTER_VERTICAL
                                 addView(
-                                    label(key, 13f, TvStyle.textDim).apply {
-                                        minWidth = dp(48)
+                                    label(key, 12.5f, TvStyle.textDim).apply {
+                                        minWidth = dp(44)
                                         includeFontPadding = false
                                     }
                                 )
-                                addView(label(action, 13f, TvStyle.muted))
+                                addView(label(action, 12.5f, TvStyle.muted))
                             },
-                            lp(-2, -2).apply { topMargin = dp(5) },
+                            lp(-2, -2).apply { topMargin = dp(1) },
                         )
                     }
             }

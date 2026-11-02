@@ -91,6 +91,7 @@ class TimedComments {
                 .put("episodeID", episode)
                 .put("startMS", start)
                 .put("nextMS", end)
+                .put("rows", rows.length())
                 .put("items", JSONArray(items.sortedBy { it.getLong("timeMS") }))
         }
     }

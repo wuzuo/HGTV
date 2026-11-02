@@ -21,6 +21,26 @@ class TvSocial(
     private val readReviews: (String, String) -> JSONObject =
         PublicComments(okhttp3.OkHttpClient())::read,
 ) {
+    private companion object {
+        /** 弹幕接口按时间窗返回，一窗 30 秒；窗口起点必须对齐到它。 */
+        const val WINDOW_MS = 30_000L
+
+        /** 请求失败后隔多久再试：太长会把整窗弹幕拖到播放位置之后，等于整段丢掉。 */
+        const val RETRY_COOLDOWN_MS = 4_000L
+
+        /** 提前多久把后面的弹幕拿到手：接口一段可能横跨几十秒，留够余量才不会边播边等。 */
+        const val LOOKAHEAD_MS = 90_000L
+
+        /** 手上往回留多久：往回跳得比这更远才重新请求（手上还有 8 段，够 4 分钟）。 */
+        const val KEEP_BEHIND_MS = 60_000L
+
+        /** 手上最多留几段：往前 90 秒、往回 1 分钟，再留几段给来回跳转，8 段够用。 */
+        const val KEEP_PAGES = 8
+
+        /** 游标最小推进量：接口偶尔给出几乎不前进的 next，按这个下限兜住，避免原地重问。 */
+        const val MIN_STEP_MS = 5_000L
+    }
+
     private val emoji = CommentEmoji(activity)
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -36,6 +56,9 @@ class TvSocial(
     private var loading = false
     private var failedAt = 0L
     private val pages = linkedMapOf<Long, JSONObject>()
+
+    /** 已经连续取到播放时间轴的哪一刻（毫秒）；接口返回的 next 说了算，不由客户端假设窗口长度。 */
+    private var coveredTo = 0L
 
     init {
         migratePreferences()
@@ -75,29 +98,25 @@ class TvSocial(
                 }
                 val p = player()
                 overlay?.invalidate()
+                val position = p?.currentPosition ?: 0L
                 if (
                     p != null &&
                         next != null &&
                         mode().showsStyle &&
                         !loading &&
                         p.duration in 1..86400000 &&
-                        p.currentPosition < p.duration &&
+                        position < p.duration &&
                         (failedAt == 0L ||
-                            android.os.SystemClock.elapsedRealtime() - failedAt > 15000)
+                            android.os.SystemClock.elapsedRealtime() - failedAt > RETRY_COOLDOWN_MS)
                 ) {
-                    val start = p.currentPosition / 30000 * 30000
-                    val desired =
-                        listOf(
-                            start,
-                            if (start > 0 && p.currentPosition - start < 15000) start - 30000
-                            else start,
-                            if (p.currentPosition - start > 20000 && start + 30000 < p.duration)
-                                start + 30000
-                            else start,
-                        )
-                    desired
-                        .firstOrNull { !pages.containsKey(it) }
-                        ?.let { loadTimed(next, it, p.duration) }
+                    // 往回跳得比手上留的还远：从当前这一窗重新拉一次。
+                    if (position + KEEP_BEHIND_MS < coveredTo)
+                        coveredTo = position / WINDOW_MS * WINDOW_MS
+                    // 接口自己会告诉下一次该从什么时候问（next_query_danmaku_list_time），
+                    // 有的集前面几十秒根本没有弹幕，硬按 30 秒切窗只会反复问到空列表。
+                    val from = maxOf(coveredTo, position / WINDOW_MS * WINDOW_MS)
+                    if (from < p.duration && from - position < LOOKAHEAD_MS)
+                        loadTimed(next, from, p.duration)
                 }
                 main.postDelayed(this, 500)
             }
@@ -137,6 +156,7 @@ class TvSocial(
         loading = false
         failedAt = 0
         pages.clear()
+        coveredTo = 0L
         overlay?.clear()
         dialog?.dismiss()
         dialog = null
@@ -156,11 +176,25 @@ class TvSocial(
         worker.submit {
             try {
                 val page = request.run { timed.read(ids.first, ids.second, start, duration) }
+                android.util.Log.i(
+                    "HGTV",
+                    "Danmaku page start=$start next=${page.optLong("nextMS")} " +
+                        "items=${page.optJSONArray("items")?.length() ?: 0} " +
+                        "rows=${page.optInt("rows")}",
+                )
                 main.post {
                     if (ticket != generation || !active) return@post
                     loading = false
                     pages[start] = page
-                    while (pages.size > 6) pages.remove(
+                    // 接口说下一段从 nextMS 开始：中间这段就是没有弹幕，直接跳过，
+                    // 再按 30 秒一窗去问只会拿回一串空列表。游标至少推进 5 秒，防止原地打转。
+                    coveredTo =
+                        maxOf(
+                            coveredTo,
+                            page.optLong("nextMS", start + WINDOW_MS),
+                            start + MIN_STEP_MS,
+                        )
+                    while (pages.size > KEEP_PAGES) pages.remove(
                         pages.keys.maxBy { kotlin.math.abs(it - start) }
                     )
                     publish()
