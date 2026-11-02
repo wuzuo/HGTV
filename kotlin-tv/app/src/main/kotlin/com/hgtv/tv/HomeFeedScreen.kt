@@ -249,13 +249,15 @@ internal class HomeFeedScreen(
                 setPadding(0, dp(14), 0, dp(10))
             }
         title.typeface = Typeface.DEFAULT_BOLD
+        // 标题最多三行、简介最多四行：底部操作按钮出现时右侧高度只有 300dp，
+        // 这两段的上限压住之后，最后一行按键提示才不会贴着卡片边缘甚至溢出。
         title.maxLines = 3
         title.ellipsize = TextUtils.TruncateAt.END
         info.addView(title)
         meta.maxLines = 2
         meta.setPadding(0, dp(12), 0, dp(12))
         info.addView(meta)
-        intro.maxLines = 6
+        intro.maxLines = 4
         intro.ellipsize = TextUtils.TruncateAt.END
         info.addView(intro)
         info.addView(Space(activity), lp(1, 0).apply { weight = 1f })
