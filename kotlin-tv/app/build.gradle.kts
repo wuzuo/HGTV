@@ -21,8 +21,8 @@ android {
         applicationId = "io.github.wuzuo.hgtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 59
-        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.18"
+        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 60
+        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.19"
     }
     buildFeatures { buildConfig = true }
     testOptions {
