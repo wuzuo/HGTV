@@ -37,6 +37,14 @@ data class DeviceIdentity(
  * cdid=3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d
  * ```
  *
+ * ## 放在哪里
+ *
+ * 各平台在启动时通过 [path] 指定首选位置，读不到再依次试 [fallbacks]：
+ *
+ * * **Android TV**：`/sdcard/hgtv/device-identity.txt`（直接用文件管理器或 `adb push` 放进去），
+ *   备选 `/sdcard/Android/media/<包名>/device-identity.txt`、应用私有外部目录、内部目录。
+ * * **Windows**：程序目录下的 `device-identity.txt`，备选 `%USERPROFILE%\.hgtv\device-identity.txt`。
+ *
  * ## 注意
  *
  * * 同一份身份不要和官方客户端同时播放：两边共用一个 `device_id`，并发请求会被判成设备异常。
@@ -45,17 +53,37 @@ data class DeviceIdentity(
  * * 文件缺失、字段不全或格式不合法都当作「没有配置」，静默走自动注册，不影响正常使用。
  */
 object DeviceIdentityFile {
-    /** 身份文件路径，由各平台在启动时设置；为空表示不启用本地身份。 */
+    /** 首选路径，由各平台在启动时设置；为空表示不启用本地身份。 */
     @Volatile var path: File? = null
+
+    /**
+     * 首选路径读不到时按顺序再试的位置。
+     *
+     * Android 11+ 的分区存储会把共享目录对应用静默隐藏（`isFile` 直接返回 false，既不报错也不抛
+     * 异常），用户会以为自己复制进去的文件没生效。所以各平台都给一个不需要权限的备选目录兜底。
+     */
+    @Volatile var fallbacks: List<File> = emptyList()
 
     private val idPattern = Regex("[1-9][0-9]{0,29}")
 
     /** `cdid` 是 UUID，但放宽到字母数字与常见分隔符，避免不同版本格式差异把用户挡在外面。 */
     private val cdidPattern = Regex("[0-9A-Za-z._-]{4,64}")
 
-    /** 读并校验；任何一步不满足都返回 null，由调用方走自动注册。 */
-    fun read(file: File? = path): DeviceIdentity? {
-        if (file == null || !file.isFile) return null
+    /**
+     * 读并校验；任何一步不满足都返回 null，由调用方走自动注册。
+     *
+     * [file] 为空时依次尝试 [path] 与 [fallbacks]，第一个能解析出完整身份的生效。
+     */
+    fun read(file: File? = null): DeviceIdentity? {
+        if (file != null) return parse(file)
+        for (candidate in listOfNotNull(path) + fallbacks) {
+            parse(candidate)?.let { return it }
+        }
+        return null
+    }
+
+    private fun parse(file: File): DeviceIdentity? {
+        if (!file.isFile) return null
         val values =
             try {
                 file

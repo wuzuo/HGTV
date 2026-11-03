@@ -81,4 +81,42 @@ class DeviceIdentityFileTest {
         assertEquals("7000000000000000002", identity?.installId)
         assertEquals("3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d", identity?.cdid)
     }
+
+    /** 首选路径被分区存储挡住时（文件存在但 isFile 返回 false），要能回退到备选目录。 */
+    @Test
+    fun fallsBackToLaterCandidatesWhenThePreferredOneIsUnreadable() {
+        val cdid = "3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d"
+        withConfigured(
+            path = File("/definitely/not/here/device-identity.txt"),
+            // 第一个备选字段不全，必须跳过它继续往下找，而不是就此认定「没有配置」。
+            fallbacks = listOf(file("device_id=999"), file("device_id=111\ninstall_id=222\ncdid=$cdid")),
+        ) {
+            assertEquals(DeviceIdentity("111", "222", cdid), DeviceIdentityFile.read())
+        }
+    }
+
+    /** 首选路径能读时不能被备选里的旧文件顶掉，否则用户改了共享目录里的值却不生效。 */
+    @Test
+    fun preferredPathWinsOverFallbacks() {
+        val cdid = "3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d"
+        withConfigured(
+            path = file("device_id=111\ninstall_id=222\ncdid=$cdid"),
+            fallbacks = listOf(file("device_id=999\ninstall_id=999\ncdid=$cdid")),
+        ) {
+            assertEquals("111", DeviceIdentityFile.read()?.deviceId)
+        }
+    }
+
+    private fun withConfigured(path: File?, fallbacks: List<File>, body: () -> Unit) {
+        val savedPath = DeviceIdentityFile.path
+        val savedFallbacks = DeviceIdentityFile.fallbacks
+        try {
+            DeviceIdentityFile.path = path
+            DeviceIdentityFile.fallbacks = fallbacks
+            body()
+        } finally {
+            DeviceIdentityFile.path = savedPath
+            DeviceIdentityFile.fallbacks = savedFallbacks
+        }
+    }
 }

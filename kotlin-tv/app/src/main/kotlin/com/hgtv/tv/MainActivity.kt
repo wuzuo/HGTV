@@ -508,9 +508,18 @@ class MainActivity : Activity() {
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
         // 自用场景：用户把自己设备上的真实播放身份放到这个文件里，就完全不用自动注册了。
-        // 路径 /sdcard/Android/data/io.github.wuzuo.hgtv/files/device-identity.txt，缺文件不影响使用。
+        // 首选 /sdcard/hgtv/device-identity.txt，方便直接把文件复制进去；分区存储挡住时依次回退，
+        // 缺文件不影响使用（走自动注册）。
         runCatching {
-            DeviceIdentityFile.path = java.io.File(getExternalFilesDir(null), "device-identity.txt")
+            val root = android.os.Environment.getExternalStorageDirectory()
+            DeviceIdentityFile.path = java.io.File(root, "hgtv/device-identity.txt")
+            DeviceIdentityFile.fallbacks =
+                listOfNotNull(
+                    // 应用自己的 media 目录：不需要任何权限，Android 11+ 的文件管理器也能看到。
+                    getExternalMediaDirs().firstOrNull()?.let { java.io.File(it, "device-identity.txt") },
+                    getExternalFilesDir(null)?.let { java.io.File(it, "device-identity.txt") },
+                    java.io.File(filesDir, "device-identity.txt"),
+                )
         }
         TvStyle.applyTheme(TvThemeStore.load(this))
         // 低内存设备：焦点切换不做缩放动画，柔光位图也降到 80% 紧致度。

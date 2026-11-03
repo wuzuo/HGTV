@@ -241,9 +241,31 @@ cdid=3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d
 
 放置位置：
 
-* **Android TV**：`/sdcard/Android/data/io.github.wuzuo.hgtv/files/device-identity.txt`
-  （`adb push device-identity.txt /sdcard/Android/data/io.github.wuzuo.hgtv/files/`）
+* **Android TV**：`/sdcard/hgtv/device-identity.txt`
+  （`adb push device-identity.txt /sdcard/hgtv/`，也可以直接用文件管理器复制进去）
 * **Windows**：程序目录下的 `device-identity.txt`，或 `%USERPROFILE%\.hgtv\device-identity.txt`
+
+TV 端按下面的顺序找文件，第一个能解析成功的生效（见 `MainActivity.onCreate`）：
+
+| 顺序 | 路径 | 是否要额外授权 |
+| --- | --- | --- |
+| 1 | `/sdcard/hgtv/device-identity.txt` | Android 11+ 要「所有文件访问」，见下 |
+| 2 | `/sdcard/Android/media/io.github.wuzuo.hgtv/device-identity.txt` | 不需要，任何版本都能读 |
+| 3 | `/sdcard/Android/data/io.github.wuzuo.hgtv/files/device-identity.txt` | 不需要，但文件管理器进不去 |
+| 4 | 应用内部 `files/device-identity.txt` | 不需要，`run-as` 才能写入 |
+
+第 1 项是首选，因为位置最好找。但 `targetSdk 36` 的分区存储会把共享目录对应用静默隐藏：
+文件明明在，`File.isFile` 也返回 false，既不报错也不抛异常。要在 Android 11+ 上真正读到它，
+装完之后执行一次：
+
+```
+adb shell appops set io.github.wuzuo.hgtv MANAGE_EXTERNAL_STORAGE allow
+```
+
+或者手动：设置 → 应用 → HGTV → 特殊应用权限 → 所有文件访问。Android 10 及以下靠
+`requestLegacyExternalStorage` + `READ_EXTERNAL_STORAGE` 直接可读，不需要这条命令。
+
+不想授权就用第 2 项，一样能直接复制（MTP 和文件管理器都看得到 `Android/media`），只是路径长一点。
 
 从官方客户端取值（手机需 root 或可 `adb root`）：
 
@@ -255,7 +277,8 @@ cdid=3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d
 ### 实现
 
 * `DeviceIdentityFile`（core）：解析、校验三个值，宽松处理 BOM / CRLF / 引号 / 行尾注释；
-  任何一项不合法都返回 `null`，静默走自动注册。
+  任何一项不合法都返回 `null`，静默走自动注册。`read()` 无参时按「`path` → `fallbacks`」
+  依次尝试，第一个解析成功的生效（分区存储挡住共享目录时靠后者兜底）。
 * `PlaybackDeviceSession`：
   * 构造参数 `localIdentity` 优先于 `register`，读到配置就不发注册请求；
   * `Profile.trusted` 标记「这是真实身份」；
@@ -263,14 +286,20 @@ cdid=3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d
 * `ContentRepository.playbackResponse`：注册身份按「用过就换」处理（用本次调用内的
   `spentInThisCall` 记账，避免刚注册的身份在第一轮就被换掉）；trusted 身份跨播放复用，
   只有它自己拿到空响应才降级。
-* 平台入口：`MainActivity.onCreate` 设 Android 路径，`bridge/Main.kt` 设 Windows 路径。
+* 平台入口：`MainActivity.onCreate` 设 Android 的 `path`（`/sdcard/hgtv`）与四个备选，
+  `bridge/Main.kt` 设 Windows 的「程序目录 → `~/.hgtv`」。
+* `AndroidManifest.xml`：为第 1 个路径加 `MANAGE_EXTERNAL_STORAGE`、
+  `READ_EXTERNAL_STORAGE`（`maxSdkVersion=32`）与 `requestLegacyExternalStorage`。
+  拿不到权限时上面的回退链照常工作，不弹窗、不报错。
 
 ### 验证
 
 * 有配置连播三集：`qualities=[360, 480, 540, 720, 1080] × 3`，`registrations=0`。
+  最近一次用真机导出的配置复验：`ep=737112 / 346328 / 689816`，三集都是 5 档。
 * 无配置连播三集：同样三集都能播，`registrations=1/2/3`（每集一次）。
-* 单测：`DeviceIdentityFileTest` 6 例、`PlaybackDeviceSessionTest` 新增 2 例、
-  `ContentRepositoryTest` 新增 2 例；core 全量 236 例仅剩已知的 Windows 原子重命名失败。
+* 单测：`DeviceIdentityFileTest` 8 例（含「首选读不到时回退到备选」「首选优先于备选」）、
+  `PlaybackDeviceSessionTest` 新增 2 例、`ContentRepositoryTest` 新增 2 例；
+  core 全量仅剩已知的 Windows 原子重命名失败。
 
 ### 风险说明
 
