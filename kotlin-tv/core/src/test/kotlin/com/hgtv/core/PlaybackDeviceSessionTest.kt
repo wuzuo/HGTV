@@ -37,7 +37,9 @@ class PlaybackDeviceSessionTest {
                             assertEquals("333", request.url.queryParameter("device_id"))
                             assertEquals("444", request.url.queryParameter("iid"))
                             assertEquals("ttreq=test-only", request.header("Cookie"))
-                            if (++models == 1) "" else model
+                            assertNotNull("播放请求必须带完整签名", request.header("x-gorgon"))
+                            models++
+                            model
                         }
                     Response.Builder()
                         .request(request)
@@ -54,8 +56,9 @@ class PlaybackDeviceSessionTest {
         val session = PlaybackDeviceSession()
         ContentRepository(http, playbackSession = session).streamLadder("123")
         ContentRepository(http, playbackSession = session).streamLadder("123")
+        // 成功拿到模型就不会换身份：跨 Repository 复用同一台设备。
         assertEquals(1, registrations)
-        assertEquals(3, models)
+        assertEquals(2, models)
         assertEquals(1, requests.map { it.url.queryParameter("cdid") }.distinct().size)
     }
 
@@ -174,11 +177,12 @@ class PlaybackDeviceSessionTest {
         assertEquals(2, registrations)
         assertTrue("first attempts must use the original identity: $devices", devices.all { it == "111" || it == "222" })
         assertEquals("222", devices.last())
-        assertTrue("rejected identity must be retried more than once: $devices", devices.count { it == "111" } >= 2)
+        // 播放接口一台设备只放行一次，所以第一台设备只发一次请求就被换掉。
+        assertEquals(1, devices.count { it == "111" })
         assertEquals("cdid must be regenerated with the identity", 2, cdids.distinct().size)
     }
 
-    /** 换了身份还是空响应，就到此为止：只换一次，然后把真实原因交给界面。 */
+    /** 三个域名都空响应就到此为止：每个域名只发一次，把真实原因交给界面。 */
     @Test
     fun persistentEmptyResponseRotatesOnlyOnceThenReportsEmptyResponse() {
         var registrations = 0
@@ -207,9 +211,9 @@ class PlaybackDeviceSessionTest {
                 .build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        assertEquals(2, registrations)
-        // 3 次 + 换设备后 2 次，最后一次是完整签名兜底；三种都没拿到模型才报空响应。
-        assertEquals(3 + 2 + 1, models)
+        // 播放域名有 3 个，每个都要换一台设备身份（首台设备注册 1 次 + 换 2 次）。
+        assertEquals(3, registrations)
+        assertEquals(3, models)
     }
 
     /** 设备未被放行（101000）同样换一次身份，不用等用户重启。 */

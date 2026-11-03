@@ -164,42 +164,45 @@ class ContentRepositoryTest {
     }
 
     @Test
-    fun playbackUsesUnsignedRegisteredIdentifiersAndKeepsThemAcrossEpisodes() {
+    fun playbackUsesSignedRequestAndAFreshDeviceForEveryPlay() {
         val requests = mutableListOf<Request>()
         val repo = repository { request ->
             requests += request
-            """{"Code":110001}"""
+            inlinePlaybackFixture()
         }
         repeat(2) {
-            val error = assertThrows(IOException::class.java) { repo.stream("123") }
-            assertTrue(error.message.orEmpty().contains("110001"))
+            assertEquals("https://example.com/video", repo.stream("123").url)
         }
+        assertEquals(2, requests.size)
         for (request in requests) {
             assertEquals("POST", request.method)
-            for (header in listOf("x-gorgon", "x-medusa", "x-argus", "x-ladon")) assertNull(
-                request.header(header)
-            )
+            // 播放接口必须带完整客户端签名，缺任何一个都会被服务端判成 200 + 0 字节。
+            for (header in listOf("x-gorgon", "x-ss-req-ticket", "x-argus", "x-ladon", "x-ss-stub")) {
+                assertNotNull("missing $header", request.header(header))
+            }
             assertTrue(request.header("User-Agent").orEmpty().contains("tt-ok/"))
             for (key in listOf("iid", "device_id")) {
-                val value = request.url.queryParameter(key)!!
-                assertEquals(if (key == "iid") "444" else "333", value)
-                assertNotEquals(VendorConstants.device[key], value)
-                assertEquals(requests.first().url.queryParameter(key), value)
+                assertEquals(if (key == "iid") "444" else "333", request.url.queryParameter(key))
             }
-            assertEquals(
-                requests.first().url.queryParameter("cdid"),
-                request.url.queryParameter("cdid"),
-            )
+            // 播放接口用 7.2.9.32 的参数，旧版本号会被直接判空。
+            assertEquals("72932", request.url.queryParameter("version_code"))
             val body = okio.Buffer()
             request.body!!.writeTo(body)
+            val payload = JSONObject(body.readUtf8())
+            assertEquals("player", payload.getString("dr_scene"))
             assertEquals(
                 "123",
-                JSONObject(body.readUtf8())
+                payload
                     .getJSONObject("mixed_video_id_map")
                     .getJSONArray("1004")
                     .getString(0),
             )
         }
+        // 一台设备只放行一次，所以第二次播放必须换一台设备（cdid 随之不同）。
+        assertNotEquals(
+            requests[0].url.queryParameter("cdid"),
+            requests[1].url.queryParameter("cdid"),
+        )
     }
 
     @Test
@@ -212,9 +215,9 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        // 原来的身份读 3 次，换一台设备后再读 2 次，最后再用完整客户端签名的请求兜底 1 次，
-        // 三次都空才把原因交给界面：「空响应」多半是 CDN 没看到签名头就直接回 0 字节。
-        assertEquals(6, calls)
+        // 三个播放域名各发一次（每次都要一台新设备身份），全都空才把原因交给界面。
+        // 播放接口一台设备只放行一次，重复读同一个域名没有意义。
+        assertEquals(3, calls)
     }
 
     private fun inlinePlaybackFixture(): String =
@@ -314,7 +317,7 @@ class ContentRepositoryTest {
     }
 
     @Test
-    fun playbackModelRecoversFromOneEmptyResponseWithoutChangingRequestIdentity() {
+    fun playbackModelSwitchesHostAndIdentityAfterEmptyResponse() {
         val requests = mutableListOf<Request>()
         var now = 1000L
         val repo =
@@ -325,13 +328,11 @@ class ContentRepositoryTest {
             }
         assertEquals("https://example.com/video", repo.streamLadder("123").renditions.single().url)
         assertEquals(2, requests.size)
-        assertEquals(
-            requests[0].url.newBuilder().removeAllQueryParameters("_rticket").build(),
-            requests[1].url.newBuilder().removeAllQueryParameters("_rticket").build(),
-        )
+        // 同一台设备对播放接口只放行一次，空响应之后必须换域名 + 换身份，原样重发没有意义。
+        assertNotEquals(requests[0].url.host, requests[1].url.host)
         assertNotEquals(
-            requests[0].url.queryParameter("_rticket"),
-            requests[1].url.queryParameter("_rticket"),
+            requests[0].url.queryParameter("cdid"),
+            requests[1].url.queryParameter("cdid"),
         )
         val first = okio.Buffer().also { requests[0].body!!.writeTo(it) }.readUtf8()
         val second = okio.Buffer().also { requests[1].body!!.writeTo(it) }.readUtf8()
@@ -351,15 +352,17 @@ class ContentRepositoryTest {
     }
 
     @Test
-    fun validPlaybackErrorsAndChangedJsonDoNotTriggerAnInternalRetry() {
+    fun validPlaybackErrorsAndChangedJsonDoNotTriggerAnInternalRetryOnSameHost() {
         for (body in listOf("""{"Code":110001}""", "<html>changed response</html>")) {
-            var calls = 0
-            val repo = repository {
-                calls++
+            val hosts = mutableListOf<String>()
+            val repo = repository { request ->
+                hosts += request.url.host
                 body
             }
             assertThrows(Exception::class.java) { repo.streamLadder("123") }
-            assertEquals(1, calls)
+            // 每个播放域名只发一次：同一域名重发只会继续拿到空响应。
+            assertEquals(hosts.distinct(), hosts)
+            assertEquals(3, hosts.size)
         }
     }
 

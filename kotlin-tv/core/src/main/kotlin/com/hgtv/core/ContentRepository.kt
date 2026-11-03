@@ -198,6 +198,9 @@ constructor(
 
     private val upcomingPlaybackModels = linkedMapOf<String, UpcomingPlaybackModel>()
 
+    /** 当前设备身份是否已经用掉播放接口的那一次放行机会。 */
+    private var playbackIdentitySpent = false
+
     // 构造并执行内容请求，统一检查 HTTP 状态和响应大小；仅按规则重试临时故障。
     private fun text(
         url: String,
@@ -662,25 +665,18 @@ constructor(
     /**
      * 拉一次播放模型。
      *
-     * 播放接口是唯一手工拼 URL 的接口：只带 UA 和 Accept、不带 `x-gorgon` / `x-ss-req-ticket`
-     * 这一组客户端签名头时，CDN 会直接回 `200 + 0 字节`——同一时间对同一分集连发十余次都是空，
-     * 而走完整签名的搜索、分类、首页接口同时段正常。这类空响应与设备身份无关，换身份只是沿用
-     * 上一版的兜底路径；真正决定 CDN 放不放行的是客户端签名，所以最后再补一次完整签名请求。
+     * 播放接口和别的接口都不一样，实测有三条硬性要求（详见 [playbackResponse]）：完整签名、
+     * 签名器内部的设备信息与 query 同源、同一台设备身份只放行一次。这里只负责按这些要求拼请求体。
      */
     private fun playbackModel(ids: List<String>, id: String): JSONObject {
+        // 与红果 7.2.9.32 的 player 请求体保持一致：少了 dr_scene / use_server_dns_scene /
+        // disable_video_relate_book 时，播放服务只回 200 + 0 字节，既不报错也不给内容。
         val payload =
-            """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
+            """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":true,"use_server_dns_scene":"cold_start_stage","video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                 .toByteArray()
-        var response = playbackResponse(payload)
-        var data = JSONObject(response)
-        var code = data.optInt("Code", data.optInt("code", 0))
-        // 设备未被放行时，换一台设备身份再取一次。
-        if (code == PLAYBACK_DEVICE_REJECTED) {
-            playbackSession.invalidate()
-            response = playbackResponse(payload)
-            data = JSONObject(response)
-            code = data.optInt("Code", data.optInt("code", 0))
-        }
+        val response = playbackResponse(payload)
+        val data = JSONObject(response)
+        val code = data.optInt("Code", data.optInt("code", 0))
         if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
         val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
         val current =
@@ -709,51 +705,52 @@ constructor(
     }
 
     /**
-     * 发一次播放模型请求：先按现行匿名请求，空响应时换一次设备身份，仍空则用完整签名兜底。
+     * 发一次播放模型请求：完整客户端签名 + 播放接口当前使用的域名。
      *
-     * 兜底只为「CDN 因为缺签名头而回空」这一种情形准备；签名请求若被业务层拒绝（错误码非 0），
-     * 仍按原来的空响应错误上报，不把内部错误码暴露给界面。
+     * 播放接口的行为和别的接口都不一样，三条都是实测结论：
+     * 1. 必须带完整签名头。只拼 query 时一律 `200 + 0 字节`。
+     * 2. 签名器内部打包的 `device_id` / `version_name` 必须和 query 里的一致，否则同样只回空。
+     * 3. 同一个设备身份对播放接口只放行一次，重复请求（哪怕换域名、换路径）都回空，
+     *    所以这里不做空响应重试；真要再试只能换一台设备身份。
+     *
+     * 域名按网页端集号的归属顺序试：网页详情页的集号属于 hl 集群，其余两个是兜底。
      */
     private fun playbackResponse(payload: ByteArray): String {
-        var rotations = 0
-        while (true) {
+        var lastProblem: Exception? = null
+        for ((index, host) in PLAYBACK_MODEL_HOSTS.withIndex()) {
+            // 一台设备只换一次放行机会：这个身份已经用掉过就重新注册一台，否则第二次播放必定空响应。
+            if (index > 0 || playbackIdentitySpent) playbackSession.invalidate()
+            playbackIdentitySpent = true
             val identity = playbackSession.profile(http)
-            val ticket = clock().toString()
-            val url = "$PLAYBACK_MODEL_URL?${Signer.encode(identity.values + ("_rticket" to ticket))}"
-            val request = Signer.Request(url, playbackHeaders(identity, ticket), payload)
             try {
-                // 换过身份之后只留一次读取预算：身份不对时再等下去也没有意义。
-                return text(
-                    url,
-                    request,
-                    retryTransient = true,
-                    retryEmptyPlayback = true,
-                    emptyPlaybackReads = if (rotations == 0) 3 else 2,
-                )
+                return signedPlayback(host, identity, payload)
             } catch (problem: EmptyPlaybackResponseException) {
-                if (rotations < PLAYBACK_IDENTITY_ROTATIONS) {
-                    playbackSession.invalidate()
-                    rotations++
-                    continue
-                }
-                return signedPlaybackResponse(payload)
+                lastProblem = problem
             }
         }
+        throw lastProblem ?: EmptyPlaybackResponseException()
     }
 
-    /** 完整客户端签名的播放请求；只在匿名请求连续空响应时才用。 */
-    private fun signedPlaybackResponse(payload: ByteArray): String {
-        val identity = playbackSession.profile(http)
-        val signed = signer.sign(PLAYBACK_MODEL_URL, identity.values, payload)
-        val request =
-            if (identity.cookie.isBlank()) signed
-            else
-                Signer.Request(
-                    signed.url,
-                    signed.headers + ("Cookie" to identity.cookie),
-                    signed.body,
-                )
-        val body = text(signed.url, request)
+    /** 一次完整签名的播放请求；空响应或业务错误码都按「拿不到播放信息」上报。 */
+    private fun signedPlayback(
+        host: String,
+        identity: PlaybackDeviceSession.Profile,
+        payload: ByteArray,
+    ): String {
+        val values =
+            LinkedHashMap(VendorConstants.device).apply {
+                putAll(identity.values)
+                putAll(PLAYBACK_QUERY)
+            }
+        // 签名器会用 device 里的 device_id / version_name 生成头部，必须与实际发出的 query 同源。
+        val signed = Signer(device = values).sign("$host$PLAYBACK_MODEL_PATH", values, payload)
+        val headers = LinkedHashMap(signed.headers)
+        headers["User-Agent"] = PLAYBACK_UA
+        if (identity.cookie.isNotBlank()) headers["Cookie"] = identity.cookie
+        val request = Signer.Request(signed.url, headers, payload)
+        // 连接层故障（连不上、读超时、5xx）重试一次是安全的：请求没到服务端，不会消耗掉
+        // 播放接口那一次放行机会。空响应不重试，那是服务端已经明确拒绝的信号。
+        val body = text(signed.url, request, retryTransient = true)
         val code =
             try {
                 JSONObject(body).optInt("Code", JSONObject(body).optInt("code", 0))
@@ -763,19 +760,6 @@ constructor(
         if (code != 0) throw EmptyPlaybackResponseException()
         return body
     }
-
-    private fun playbackHeaders(
-        identity: PlaybackDeviceSession.Profile,
-        ticket: String,
-    ): Map<String, String> =
-        mapOf(
-            "User-Agent" to
-                "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
-            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
-            "x-ss-req-ticket" to ticket,
-        ) +
-            if (identity.cookie.isBlank()) emptyMap()
-            else mapOf("Cookie" to identity.cookie)
 
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
@@ -905,14 +889,43 @@ constructor(
     }
 
     companion object {
-        /** 播放模型一次请求里最多换几次设备身份（每次 = 重新注册一台，等价于重启应用）。 */
-        private const val PLAYBACK_IDENTITY_ROTATIONS = 1
+        /**
+         * 播放接口域名，按网页端集号的归属顺序排列。
+         *
+         * 网页详情页给出的分集号在 hl 集群上，往 c / b 这些内容集群发只会拿到空响应；
+         * 后两个留作兜底，命中不了会各换一台设备身份再试。
+         */
+        private val PLAYBACK_MODEL_HOSTS =
+            listOf(
+                "https://api5-normal-hl.fqnovel.com",
+                "https://api5-normal-sinfonlinec.fqnovel.com",
+                "https://api5-normal-lf.fqnovel.com",
+            )
 
-        private const val PLAYBACK_MODEL_URL =
-            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
+        private const val PLAYBACK_MODEL_PATH =
+            "/novel/player/multi_video_model/player/v1"
 
-        /** 设备未被放行时平台给这个错误码，见 [DeviceRegister] 头注释。 */
-        private const val PLAYBACK_DEVICE_REJECTED = 101000
+        /** 红果 7.2.9.32 的播放参数；旧版本号会被播放服务直接判空。 */
+        private val PLAYBACK_QUERY =
+            linkedMapOf(
+                "version_code" to "72932",
+                "version_name" to "7.2.9.32",
+                "manifest_version_code" to "72932",
+                "update_version_code" to "72932",
+                "channel" to "xiaomi_8662_64",
+                "pv_player" to "72932",
+                "device_type" to "SM-A546E",
+                "device_brand" to "Samsung",
+                "os_api" to "35",
+                "os_version" to "15",
+                "resolution" to "1600*900",
+                "dpi" to "240",
+                "dragon_device_type" to "pad",
+                "is_android_pad_screen" to "1",
+            )
+
+        private const val PLAYBACK_UA =
+            "com.phoenix.read/72932 (Linux; U; Android 15; zh_CN_#Hans; SM-A546E; Build/V417IR;tt-ok/3.12.13.20)"
 
         fun extractRouter(html: String): JSONObject {
             val marker = html.indexOf("_ROUTER_DATA")

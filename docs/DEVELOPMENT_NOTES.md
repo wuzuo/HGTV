@@ -172,3 +172,34 @@
 改动：播放接口保留原有匿名请求与换身份作为主路径，连续空响应后在末尾补一次完整签名请求；签名请求若被业务层拒绝（错误码非 0），仍按原「空响应」错误上报，不把 110001 之类内部码透给界面。同时修掉一处自相矛盾：`text()` 过去在重试时只改 query 里的 `_rticket`、不重算签名，现在改为查询参数与 `x-ss-req-ticket` 头一起刷新。
 
 局限：本机无法端到端验证签名兜底是否真能拿到模型，只能确认「空响应 → 兜底 → 不再空」这条链路成立、失败时仍报原错误。是否有效必须用电视端实机验收，且要按首页试播、详情播放、手动切集、自然连播分开计数。
+
+## 2026-11-03 播放接口空响应：抓包定案
+
+用真机（SM-A546E，Android 15）+ MITM 抓 `com.phoenix.read`（红果 7.2.9.32）的播放请求做过比对，
+空响应是三个原因叠加，不是单一问题：
+
+1. **域名不对**。网页详情页（`hongguoduanju.com/detail`）给出的分集号属于
+   `api5-normal-hl.fqnovel.com` 集群。应用一直打 `api5-normal-sinfonlineb`，
+   同一集号在 b/c/a/lf 上都只回 `200 + 0 字节`，只有 hl 返回播放模型。
+2. **签名器内部设备信息必须与 query 同源**。`Signer` 默认拿 `VendorConstants.device` 里的
+   `device_id` / `version_name` 生成头部，而请求 query 用的是设备注册返回的身份。两者不一致时
+   服务端判成伪造，同样只回空；`Signer(device = 实际发出的参数)` 之后立刻拿到 `code = 0`。
+3. **一台设备只放行一次**。同一 `device_id` 对播放接口的第二次请求（换域名、换集、换连接、
+   间隔 10 秒都试过）一律空响应。红果自己不受限是因为它的设备身份长期在用；
+   新注册的匿名设备只有第一播有效，所以客户端必须「每次播放换一台设备」。
+
+请求体和参数也要对齐红果当前版本，旧值会被判空：`dr_scene:"player"`、
+`disable_video_relate_book`、`use_server_dns:true` + `use_server_dns_scene:"cold_start_stage"`、
+`version_code/version_name = 72932 / 7.2.9.32`、`channel=xiaomi_8662_64`、UA 同步成 72932。
+
+改法：`ContentRepository.playbackResponse` 改成「完整签名 + hl 域优先 + 每次播放新设备」，
+域名兜底 hl → c → lf；不再对同一域名重复读空响应（播放接口重发没有意义）。
+
+端到端验证：连续三集各拿到 5 档清晰度；默认探针读到 1080P、总长 15,064,141 字节、
+首尾字节可读、`ftyp` 头正确。
+
+**抓包环境备忘**（下次直接复用）：Android 14+ 的系统证书在
+`/apex/com.android.conscrypt/cacerts`，必须在该目录对 **zygote 的 mount namespace** 做 tmpfs 覆盖
+（`nsenter -t <zygote> -m -- mount -t tmpfs ...`），并把目录 chcon 成
+`u:object_r:system_security_cacerts_file:s0`，否则 untrusted_app 读不到证书、握手一律失败。
+红果有反调试，Java 层 hook 会让进程直接退出，只能靠 MITM。
