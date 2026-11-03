@@ -507,6 +507,11 @@ class MainActivity : Activity() {
     // 启动入口：创建根容器，初始化账户、更新和媒体控制，再异步读取本机记录。
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
+        // 自用场景：用户把自己设备上的真实播放身份放到这个文件里，就完全不用自动注册了。
+        // 路径 /sdcard/Android/data/io.github.wuzuo.hgtv/files/device-identity.txt，缺文件不影响使用。
+        runCatching {
+            DeviceIdentityFile.path = java.io.File(getExternalFilesDir(null), "device-identity.txt")
+        }
         TvStyle.applyTheme(TvThemeStore.load(this))
         // 低内存设备：焦点切换不做缩放动画，柔光位图也降到 80% 紧致度。
         if ((getSystemService(android.app.ActivityManager::class.java)?.isLowRamDevice) == true) {

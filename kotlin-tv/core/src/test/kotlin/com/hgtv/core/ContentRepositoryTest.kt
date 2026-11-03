@@ -205,6 +205,63 @@ class ContentRepositoryTest {
         )
     }
 
+    /**
+     * 本地配置的真实设备身份不限次：连续播放复用同一套 id，也不再打注册接口。
+     *
+     * 这是「不用每次播放都注册」的落点——注册身份用一次就得换，本地身份不用。
+     */
+    @Test
+    fun trustedLocalIdentityIsReusedForEveryPlay() {
+        var registrations = 0
+        val devices = mutableListOf<String?>()
+        val repo =
+            repository(
+                session =
+                    PlaybackDeviceSession(
+                        register = {
+                            registrations++
+                            DeviceRegister.Registered("333", "444")
+                        },
+                        localIdentity = {
+                            DeviceIdentity("777", "888", "6f1c2a9e-2b3d-4c5e-8f70-91a2b3c4d5e6")
+                        },
+                    )
+            ) { request ->
+                devices += request.url.queryParameter("device_id")
+                inlinePlaybackFixture()
+            }
+        repeat(3) { assertEquals("https://example.com/video", repo.stream("123").url) }
+        assertEquals(listOf("777", "777", "777"), devices)
+        assertEquals("本地身份不该触发任何注册请求", 0, registrations)
+    }
+
+    /** 本地身份播放也拿不到内容时，得退回自动注册，不能拿着坏配置一直失败。 */
+    @Test
+    fun rejectedLocalIdentityFallsBackToARegisteredDevice() {
+        var registrations = 0
+        val devices = mutableListOf<String?>()
+        val repo =
+            repository(
+                session =
+                    PlaybackDeviceSession(
+                        register = {
+                            registrations++
+                            DeviceRegister.Registered("333", "444")
+                        },
+                        localIdentity = {
+                            DeviceIdentity("777", "888", "6f1c2a9e-2b3d-4c5e-8f70-91a2b3c4d5e6")
+                        },
+                    )
+            ) { request ->
+                val device = request.url.queryParameter("device_id")
+                devices += device
+                if (device == "777") "" else inlinePlaybackFixture()
+            }
+        assertEquals("https://example.com/video", repo.stream("123").url)
+        assertEquals(listOf<String?>("777", "333"), devices)
+        assertEquals(1, registrations)
+    }
+
     @Test
     fun emptyPlaybackResponseReportsActionableError() {
         var calls = 0
@@ -504,6 +561,7 @@ class ContentRepositoryTest {
 
     private fun repository(
         clock: () -> Long = System::currentTimeMillis,
+        session: PlaybackDeviceSession = PlaybackDeviceSession { DeviceRegister.Registered("333", "444") },
         respond: (Request) -> String,
     ) =
         ContentRepository(
@@ -519,7 +577,7 @@ class ContentRepositoryTest {
                 }
                 .build(),
             clock,
-            PlaybackDeviceSession { DeviceRegister.Registered("333", "444") },
+            session,
         )
 
     private fun rankPayload(page: Int = 1, totalPages: Int = 2) =

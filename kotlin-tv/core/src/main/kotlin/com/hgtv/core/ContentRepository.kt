@@ -198,7 +198,7 @@ constructor(
 
     private val upcomingPlaybackModels = linkedMapOf<String, UpcomingPlaybackModel>()
 
-    /** 当前设备身份是否已经用掉播放接口的那一次放行机会。 */
+    /** 当前**注册**身份是否已经用掉播放接口的那一次放行机会（本地真实身份不受此限）。 */
     private var playbackIdentitySpent = false
 
     // 构造并执行内容请求，统一检查 HTTP 状态和响应大小；仅按规则重试临时故障。
@@ -665,8 +665,9 @@ constructor(
     /**
      * 拉一次播放模型。
      *
-     * 播放接口和别的接口都不一样，实测有三条硬性要求（详见 [playbackResponse]）：完整签名、
-     * 签名器内部的设备信息与 query 同源、同一台设备身份只放行一次。这里只负责按这些要求拼请求体。
+     * 播放接口和别的接口都不一样，实测有两条硬性要求（详见 [playbackResponse]）：完整签名、
+     * 签名器内部的设备信息与 query 同源。另外新注册的设备身份基本只有一次放行额度，靠
+     * [PlaybackDeviceSession] 换身份或改用本地真实身份来绕。这里只负责按这些要求拼请求体。
      */
     private fun playbackModel(ids: List<String>, id: String): JSONObject {
         // 与红果 7.2.9.32 的 player 请求体保持一致：少了 dr_scene / use_server_dns_scene /
@@ -707,25 +708,35 @@ constructor(
     /**
      * 发一次播放模型请求：完整客户端签名 + 播放接口当前使用的域名。
      *
-     * 播放接口的行为和别的接口都不一样，三条都是实测结论：
+     * 播放接口的行为和别的接口都不一样，两条是实测结论：
      * 1. 必须带完整签名头。只拼 query 时一律 `200 + 0 字节`。
      * 2. 签名器内部打包的 `device_id` / `version_name` 必须和 query 里的一致，否则同样只回空。
-     * 3. 同一个设备身份对播放接口只放行一次，重复请求（哪怕换域名、换路径）都回空，
-     *    所以这里不做空响应重试；真要再试只能换一台设备身份。
      *
+     * 另外「一台设备只放行一次」只对**新注册**的身份成立：本地配置进来的真实身份不限次，可以跨
+     * 播放复用；注册来的身份每播一次就得换一台（见 [PlaybackDeviceSession.invalidate]）。
      * 域名按网页端集号的归属顺序试：网页详情页的集号属于 hl 集群，其余两个是兜底。
      */
     private fun playbackResponse(payload: ByteArray): String {
         var lastProblem: Exception? = null
-        for ((index, host) in PLAYBACK_MODEL_HOSTS.withIndex()) {
-            // 一台设备只换一次放行机会：这个身份已经用掉过就重新注册一台，否则第二次播放必定空响应。
-            if (index > 0 || playbackIdentitySpent) playbackSession.invalidate()
-            playbackIdentitySpent = true
-            val identity = playbackSession.profile(http)
+        // 这一趟里已经用过一台注册设备：下一轮必须换，否则必然空响应。
+        var spentInThisCall = false
+        for (host in PLAYBACK_MODEL_HOSTS) {
+            var identity = playbackSession.profile(http)
+            if (!identity.trusted && (playbackIdentitySpent || spentInThisCall)) {
+                // 注册身份只有一次额度：这个身份已经用过（上次播放，或这一趟的上一个域名），换一台。
+                playbackSession.invalidate()
+                identity = playbackSession.profile(http)
+            }
+            if (!identity.trusted) {
+                playbackIdentitySpent = true
+                spentInThisCall = true
+            }
             try {
                 return signedPlayback(host, identity, payload)
             } catch (problem: EmptyPlaybackResponseException) {
                 lastProblem = problem
+                // 本地配置的真实身份也可能失效：丢掉它，下一个域名改用自动注册兜底。
+                if (identity.trusted) playbackSession.invalidate()
             }
         }
         throw lastProblem ?: EmptyPlaybackResponseException()

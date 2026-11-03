@@ -270,4 +270,54 @@ class PlaybackDeviceSessionTest {
         session.profile(http)
         assertEquals(1, registrations)
     }
+
+    /** 有本地配置就不该再打注册接口——这正是「省掉每次播放一次注册」的关键。 */
+    @Test
+    fun localIdentitySkipsRegistrationAndIsMarkedTrusted() {
+        var registrations = 0
+        val session =
+            PlaybackDeviceSession(
+                register = {
+                    registrations++
+                    DeviceRegister.Registered("333", "444")
+                },
+                localIdentity = { DeviceIdentity("777", "888", LOCAL_CDID) },
+            )
+        val profile = session.profile(OkHttpClient())
+        assertTrue("本地配置的身份必须标记成 trusted", profile.trusted)
+        assertEquals("777", profile.values["device_id"])
+        assertEquals("888", profile.values["iid"])
+        assertEquals(LOCAL_CDID, profile.values["cdid"])
+        assertEquals("本地身份没有注册响应，Cookie 只能是空", "", profile.cookie)
+        assertEquals(0, registrations)
+        assertSame(profile, session.profile(OkHttpClient()))
+    }
+
+    /** 本地配置被判定失效后再 invalidate：本次进程不再读它，改走自动注册兜底。 */
+    @Test
+    fun rejectedLocalIdentityFallsBackToRegistration() {
+        var registrations = 0
+        val session =
+            PlaybackDeviceSession(
+                register = {
+                    registrations++
+                    DeviceRegister.Registered("333", "444")
+                },
+                localIdentity = { DeviceIdentity("777", "888", LOCAL_CDID) },
+            )
+        assertTrue(session.profile(OkHttpClient()).trusted)
+        session.invalidate()
+        val next = session.profile(OkHttpClient())
+        assertFalse("失效的本地身份不能一直复用", next.trusted)
+        assertEquals("333", next.values["device_id"])
+        assertEquals(1, registrations)
+        // 之后即使再 invalidate，也不该回头读那份已经废掉的配置。
+        session.invalidate()
+        assertEquals("333", session.profile(OkHttpClient()).values["device_id"])
+        assertEquals(2, registrations)
+    }
+
+    private companion object {
+        const val LOCAL_CDID = "6f1c2a9e-2b3d-4c5e-8f70-91a2b3c4d5e6"
+    }
 }

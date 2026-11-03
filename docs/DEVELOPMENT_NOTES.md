@@ -184,9 +184,11 @@
 2. **签名器内部设备信息必须与 query 同源**。`Signer` 默认拿 `VendorConstants.device` 里的
    `device_id` / `version_name` 生成头部，而请求 query 用的是设备注册返回的身份。两者不一致时
    服务端判成伪造，同样只回空；`Signer(device = 实际发出的参数)` 之后立刻拿到 `code = 0`。
-3. **一台设备只放行一次**。同一 `device_id` 对播放接口的第二次请求（换域名、换集、换连接、
-   间隔 10 秒都试过）一律空响应。红果自己不受限是因为它的设备身份长期在用；
-   新注册的匿名设备只有第一播有效，所以客户端必须「每次播放换一台设备」。
+3. **新注册的设备身份对播放接口只有一次额度**。同一 `device_id` 的第二次请求（换域名、换集、
+   换连接、间隔 10 秒、间隔 90 秒都试过）一律空响应。红果自己不受限，是因为它的设备身份在
+   服务端有两个月的历史；把它的 `device_id/iid/cdid` 拿过来、用我们自己的签名连播，也照样给
+   完整模型。所以「老身份不限次、新身份一次」是服务端侧的设备历史，客户端伪造不出来，
+   只能二选一：每次播放换一台设备，或者直接用一台真实设备的身份（见下一节）。
 
 请求体和参数也要对齐红果当前版本，旧值会被判空：`dr_scene:"player"`、
 `disable_video_relate_book`、`use_server_dns:true` + `use_server_dns_scene:"cold_start_stage"`、
@@ -203,3 +205,76 @@
 （`nsenter -t <zygote> -m -- mount -t tmpfs ...`），并把目录 chcon 成
 `u:object_r:system_security_cacerts_file:s0`，否则 untrusted_app 读不到证书、握手一律失败。
 红果有反调试，Java 层 hook 会让进程直接退出，只能靠 MITM。
+
+## 2026-11-03 本地设备身份文件（免注册播放）
+
+### 背景
+
+播放接口的放行额度绑在服务端的设备历史上：新注册的身份基本只放行一次，服务端认过的老身份不限次。
+既然伪造不出来，就提供一条「直接用真实设备身份」的路：用户把自己设备上的身份填进配置文件，
+程序读它就完全不注册。
+
+### 实测对照
+
+同一份请求形态（完整签名 + hl 域），只换身份：
+
+| 身份 | 第 1 次 | 第 2 次 | 第 3 次 |
+| --- | --- | --- | --- |
+| 红果真实设备身份 + 完整 Cookie（含 `odin_tt`） | 26032 B | 26026 B | — |
+| 红果真实设备身份 + 只有基础 Cookie | 26165 B | — | — |
+| 新注册的匿名身份 | 26081 B | 0 | 0 |
+
+`odin_tt` / `passport_csrf_token` 不是必要条件（去掉照样成功），差异纯粹在 `device_id` 这套身份
+本身。另测：补全官方请求头与缺的参数、请求体 gzip、把注册版本号对齐到 72932、间隔 90 秒再试，
+都不能让新身份播第二次。
+
+### 用法
+
+配置文件是纯文本，一行一个 `键=值`，`#` 后为注释，键名不区分大小写（下面三个值都是占位符，
+换成自己设备上的真实值）：
+
+```
+device_id=7000000000000000001
+install_id=7000000000000000002
+cdid=3b1f5c2d-8a4e-4f60-9c71-2d3e4a5b6c7d
+```
+
+放置位置：
+
+* **Android TV**：`/sdcard/Android/data/io.github.wuzuo.hgtv/files/device-identity.txt`
+  （`adb push device-identity.txt /sdcard/Android/data/io.github.wuzuo.hgtv/files/`）
+* **Windows**：程序目录下的 `device-identity.txt`，或 `%USERPROFILE%\.hgtv\device-identity.txt`
+
+从官方客户端取值（手机需 root 或可 `adb root`）：
+
+```
+/data/data/com.phoenix.read/shared_prefs/applog_stats.xml          → <string name="device_id"> / <string name="install_id">
+/data/data/com.phoenix.read/shared_prefs/com.ss.android.deviceregister.utils.Cdid.xml → <string name="cdid">
+```
+
+### 实现
+
+* `DeviceIdentityFile`（core）：解析、校验三个值，宽松处理 BOM / CRLF / 引号 / 行尾注释；
+  任何一项不合法都返回 `null`，静默走自动注册。
+* `PlaybackDeviceSession`：
+  * 构造参数 `localIdentity` 优先于 `register`，读到配置就不发注册请求；
+  * `Profile.trusted` 标记「这是真实身份」；
+  * `invalidate()` 命中 trusted 身份时置 `localRejected`，本次进程不再读配置，改走注册兜底。
+* `ContentRepository.playbackResponse`：注册身份按「用过就换」处理（用本次调用内的
+  `spentInThisCall` 记账，避免刚注册的身份在第一轮就被换掉）；trusted 身份跨播放复用，
+  只有它自己拿到空响应才降级。
+* 平台入口：`MainActivity.onCreate` 设 Android 路径，`bridge/Main.kt` 设 Windows 路径。
+
+### 验证
+
+* 有配置连播三集：`qualities=[360, 480, 540, 720, 1080] × 3`，`registrations=0`。
+* 无配置连播三集：同样三集都能播，`registrations=1/2/3`（每集一次）。
+* 单测：`DeviceIdentityFileTest` 6 例、`PlaybackDeviceSessionTest` 新增 2 例、
+  `ContentRepositoryTest` 新增 2 例；core 全量 236 例仅剩已知的 Windows 原子重命名失败。
+
+### 风险说明
+
+* 同一份身份不要和官方客户端**同时**播放：两边共用一个 `device_id`，并发请求会被判设备异常。
+* 这**不是**给所有人共用一套身份的方案。多 IP 共用同一个 `device_id` 是典型的共享账号特征，
+  被封之后该身份对所有人生效（包括官方 App），所以只适合一人一份、各自填自己的。
+* 长期不用的身份会不会被服务端降级，没有数据。真降级了会自动退回注册，功能不受影响。
