@@ -212,9 +212,9 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        // 原来的身份读 3 次，换一台设备后再读 2 次，然后才把原因交给界面：
-        // 「空响应」多半是这台设备不再被放行，光靠退避重试等不回来。
-        assertEquals(5, calls)
+        // 原来的身份读 3 次，换一台设备后再读 2 次，最后再用完整客户端签名的请求兜底 1 次，
+        // 三次都空才把原因交给界面：「空响应」多半是 CDN 没看到签名头就直接回 0 字节。
+        assertEquals(6, calls)
     }
 
     private fun inlinePlaybackFixture(): String =

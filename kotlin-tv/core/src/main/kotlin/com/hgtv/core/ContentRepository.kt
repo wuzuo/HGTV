@@ -219,20 +219,17 @@ constructor(
             request.post(it.toRequestBody("application/json; charset=utf-8".toMediaType()))
         }
         fun fetch(): String {
+            val base = request.build()
+            // 重试时换一个请求时间戳；带了 x-ss-req-ticket 的请求必须让头与查询参数保持一致。
             val next =
-                request.build().let { original ->
-                    if (retryEmptyPlayback)
-                        original
-                            .newBuilder()
-                            .url(
-                                original.url
-                                    .newBuilder()
-                                    .setQueryParameter("_rticket", clock().toString())
-                                    .build()
-                            )
-                            .build()
-                    else original
-                }
+                if (retryEmptyPlayback) {
+                    val fresh = clock().toString()
+                    base
+                        .newBuilder()
+                        .url(base.url.newBuilder().setQueryParameter("_rticket", fresh).build())
+                        .header("x-ss-req-ticket", fresh)
+                        .build()
+                } else base
             return RequestScope.execute(client.newCall(next)) { response ->
                 if (!response.isSuccessful) throw ContentHttpException(response.code)
                 val body = response.body ?: throw IOException("内容响应为空")
@@ -663,88 +660,122 @@ constructor(
     }
 
     /**
-     * 拉一次播放模型；空响应或「设备未被放行」时换一台设备身份再试。
+     * 拉一次播放模型。
      *
-     * 平台的内容接口按 `device_id + install_id` 这一对匿名设备身份放行（见 [DeviceRegister]）。这类身份
-     * 每次启动只注册一次并一直复用，一旦服务端把它判成过期或限流，之后每个请求都只回 `200 + 0 字节`，
-     * 退避重试纯属白等——线上表现就是「播放信息接口返回空响应」，用户只能关掉应用重开（重新注册一台）。
-     * 这里主动丢弃缓存身份再注册一次，把「重启应用」这个动作收敛进一次播放请求里。
+     * 播放接口是唯一手工拼 URL 的接口：只带 UA 和 Accept、不带 `x-gorgon` / `x-ss-req-ticket`
+     * 这一组客户端签名头时，CDN 会直接回 `200 + 0 字节`——同一时间对同一分集连发十余次都是空，
+     * 而走完整签名的搜索、分类、首页接口同时段正常。这类空响应与设备身份无关，换身份只是沿用
+     * 上一版的兜底路径；真正决定 CDN 放不放行的是客户端签名，所以最后再补一次完整签名请求。
      */
     private fun playbackModel(ids: List<String>, id: String): JSONObject {
         val payload =
             """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                 .toByteArray()
+        var response = playbackResponse(payload)
+        var data = JSONObject(response)
+        var code = data.optInt("Code", data.optInt("code", 0))
+        // 设备未被放行时，换一台设备身份再取一次。
+        if (code == PLAYBACK_DEVICE_REJECTED) {
+            playbackSession.invalidate()
+            response = playbackResponse(payload)
+            data = JSONObject(response)
+            code = data.optInt("Code", data.optInt("code", 0))
+        }
+        if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
+        val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
+        val current =
+            map.optJSONObject(id)
+                ?: (if (ids.size == 1)
+                    map.keys()
+                        .asSequence()
+                        .mapNotNull { map.optJSONObject(it) }
+                        .firstOrNull()
+                else null)
+                ?: throw IOException("播放信息为空")
+        synchronized(upcomingPlaybackModels) {
+            ids.drop(1).forEach { next ->
+                map.optJSONObject(next)
+                    ?.takeIf { row ->
+                        val model = row.opt("video_model")
+                        (model is JSONObject || model is String && model.isNotBlank()) &&
+                            row.toString().toByteArray(Charsets.UTF_8).size <= 256 * 1024
+                    }
+                    ?.let { upcomingPlaybackModels[next] = UpcomingPlaybackModel(it, clock()) }
+            }
+            while (upcomingPlaybackModels.size > 6)
+                upcomingPlaybackModels.remove(upcomingPlaybackModels.keys.first())
+        }
+        return current
+    }
+
+    /**
+     * 发一次播放模型请求：先按现行匿名请求，空响应时换一次设备身份，仍空则用完整签名兜底。
+     *
+     * 兜底只为「CDN 因为缺签名头而回空」这一种情形准备；签名请求若被业务层拒绝（错误码非 0），
+     * 仍按原来的空响应错误上报，不把内部错误码暴露给界面。
+     */
+    private fun playbackResponse(payload: ByteArray): String {
         var rotations = 0
         while (true) {
             val identity = playbackSession.profile(http)
-            val query = Signer.encode(identity.values + ("_rticket" to clock().toString()))
-            val playerUrl =
-                "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/?$query"
-            val request =
-                Signer.Request(
-                    playerUrl,
-                    mapOf(
-                        "User-Agent" to
-                            "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
-                        "Accept" to "application/json; charset=utf-8,application/x-protobuf",
-                    ) +
-                        if (identity.cookie.isBlank()) emptyMap()
-                        else mapOf("Cookie" to identity.cookie),
-                    payload,
+            val ticket = clock().toString()
+            val url = "$PLAYBACK_MODEL_URL?${Signer.encode(identity.values + ("_rticket" to ticket))}"
+            val request = Signer.Request(url, playbackHeaders(identity, ticket), payload)
+            try {
+                // 换过身份之后只留一次读取预算：身份不对时再等下去也没有意义。
+                return text(
+                    url,
+                    request,
+                    retryTransient = true,
+                    retryEmptyPlayback = true,
+                    emptyPlaybackReads = if (rotations == 0) 3 else 2,
                 )
-            // 批量接口同次读取当前集和至多后两集，减少连续手动切集时的播放信息请求。
-            val response =
-                try {
-                    // 换过身份之后只留一次读取预算：身份不对时再等下去也没有意义。
-                    text(
-                        playerUrl,
-                        request,
-                        retryTransient = true,
-                        retryEmptyPlayback = true,
-                        emptyPlaybackReads = if (rotations == 0) 3 else 2,
-                    )
-                } catch (problem: EmptyPlaybackResponseException) {
-                    if (rotations >= PLAYBACK_IDENTITY_ROTATIONS) throw problem
+            } catch (problem: EmptyPlaybackResponseException) {
+                if (rotations < PLAYBACK_IDENTITY_ROTATIONS) {
                     playbackSession.invalidate()
                     rotations++
                     continue
                 }
-            val data = JSONObject(response)
-            val code = data.optInt("Code", data.optInt("code", 0))
-            if (code != 0) {
-                if (code == PLAYBACK_DEVICE_REJECTED && rotations < PLAYBACK_IDENTITY_ROTATIONS) {
-                    playbackSession.invalidate()
-                    rotations++
-                    continue
-                }
-                throw IOException("播放接口暂不可用（错误码 $code）")
+                return signedPlaybackResponse(payload)
             }
-            val map = data.optJSONObject("data") ?: throw IOException("播放信息为空")
-            val current =
-                map.optJSONObject(id)
-                    ?: (if (ids.size == 1)
-                        map.keys()
-                            .asSequence()
-                            .mapNotNull { map.optJSONObject(it) }
-                            .firstOrNull()
-                    else null)
-                    ?: throw IOException("播放信息为空")
-            synchronized(upcomingPlaybackModels) {
-                ids.drop(1).forEach { next ->
-                    map.optJSONObject(next)
-                        ?.takeIf { row ->
-                            val model = row.opt("video_model")
-                            (model is JSONObject || model is String && model.isNotBlank()) &&
-                                row.toString().toByteArray(Charsets.UTF_8).size <= 256 * 1024
-                        }
-                        ?.let { upcomingPlaybackModels[next] = UpcomingPlaybackModel(it, clock()) }
-                }
-                while (upcomingPlaybackModels.size > 6)
-                    upcomingPlaybackModels.remove(upcomingPlaybackModels.keys.first())
-            }
-            return current
         }
     }
+
+    /** 完整客户端签名的播放请求；只在匿名请求连续空响应时才用。 */
+    private fun signedPlaybackResponse(payload: ByteArray): String {
+        val identity = playbackSession.profile(http)
+        val signed = signer.sign(PLAYBACK_MODEL_URL, identity.values, payload)
+        val request =
+            if (identity.cookie.isBlank()) signed
+            else
+                Signer.Request(
+                    signed.url,
+                    signed.headers + ("Cookie" to identity.cookie),
+                    signed.body,
+                )
+        val body = text(signed.url, request)
+        val code =
+            try {
+                JSONObject(body).optInt("Code", JSONObject(body).optInt("code", 0))
+            } catch (_: Exception) {
+                throw EmptyPlaybackResponseException()
+            }
+        if (code != 0) throw EmptyPlaybackResponseException()
+        return body
+    }
+
+    private fun playbackHeaders(
+        identity: PlaybackDeviceSession.Profile,
+        ticket: String,
+    ): Map<String, String> =
+        mapOf(
+            "User-Agent" to
+                "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)",
+            "Accept" to "application/json; charset=utf-8,application/x-protobuf",
+            "x-ss-req-ticket" to ticket,
+        ) +
+            if (identity.cookie.isBlank()) emptyMap()
+            else mapOf("Cookie" to identity.cookie)
 
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
@@ -876,6 +907,9 @@ constructor(
     companion object {
         /** 播放模型一次请求里最多换几次设备身份（每次 = 重新注册一台，等价于重启应用）。 */
         private const val PLAYBACK_IDENTITY_ROTATIONS = 1
+
+        private const val PLAYBACK_MODEL_URL =
+            "https://api5-normal-sinfonlineb.fqnovel.com/novel/player/multi_video_model/v1/"
 
         /** 设备未被放行时平台给这个错误码，见 [DeviceRegister] 头注释。 */
         private const val PLAYBACK_DEVICE_REJECTED = 101000

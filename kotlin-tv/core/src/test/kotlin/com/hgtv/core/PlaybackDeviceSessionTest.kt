@@ -208,7 +208,8 @@ class PlaybackDeviceSessionTest {
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
         assertEquals(2, registrations)
-        assertEquals(3 + 2, models)
+        // 3 次 + 换设备后 2 次，最后一次是完整签名兜底；三种都没拿到模型才报空响应。
+        assertEquals(3 + 2 + 1, models)
     }
 
     /** 设备未被放行（101000）同样换一次身份，不用等用户重启。 */
