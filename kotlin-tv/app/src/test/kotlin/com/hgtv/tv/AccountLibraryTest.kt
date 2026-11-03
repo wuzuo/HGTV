@@ -198,14 +198,17 @@ class AccountLibraryTest {
             )
             val root = activity.findViewById<View>(android.R.id.content)
             method(activity, "switchTab", 3)
-            assertTrue(texts(root).any { it.text.toString() == "共 80 集\n看到第 4 集" })
+            // 集数已经写在海报角标上，副标题只剩进度这一行。
+            assertTrue(texts(root).any { it.text.toString() == "看到第 4 集" })
             texts(root).single { it.text.toString() == "账户收藏" }.performClick()
-            assertTrue(texts(root).any { it.text.toString() == "共 80 集\n看到第 12 集" })
-            assertFalse(texts(root).any { it.text.toString() == "共 80 集\n看到第 4 集" })
+            assertTrue(texts(root).any { it.text.toString() == "看到第 12 集" })
+            assertFalse(texts(root).any { it.text.toString() == "看到第 4 集" })
             method(activity, "switchTab", 5)
-            assertTrue(texts(root).any { it.text.toString().startsWith("共 80 集\n看到第 12 集\n已上线") })
+            assertTrue(
+                texts(root).any { it.text.toString().startsWith("看到第 12 集 · 已上线 · 可观看") }
+            )
             texts(root).single { it.text.toString() == "待上线 · 1" }.performClick()
-            assertTrue(texts(root).any { it.text.toString().startsWith("待上线\n暂不可观看\n待上线") })
+            assertTrue(texts(root).any { it.text.toString() == "待上线，暂不可观看" })
         } finally {
             controller.destroy()
         }

@@ -92,6 +92,50 @@ class DiscoveryFiltersTest {
         assertThrows(IllegalArgumentException::class.java) { choice.choose("unknown", "bad") }
     }
 
+    /**
+     * 找剧列表没有搜索接口的 `hot_score_data`，热度藏在 `sub_title_list` 的火焰项
+     * （`data_type == 27`）里；文案要补上「热度」，与排行榜、搜索结果的写法一致。
+     */
+    @Test
+    fun heatComesFromTheFlameSubTitleAndStaysEmptyWhenAbsent() {
+        fun videoOf(page: JSONObject) =
+            page.getJSONObject("data").getJSONArray("video_data").getJSONObject(0)
+
+        val raw = response()
+        videoOf(raw)
+            .put(
+                "sub_title_list",
+                JSONArray()
+                    .put(JSONObject().put("content", "1335万").put("data_type", 27))
+                    .put(JSONObject().put("content", "成长").put("data_type", 3)),
+            )
+        assertEquals(
+            "1335万热度",
+            FilteredDiscoveryParser.parse(raw.toString(), null).items.single().heat,
+        )
+
+        // 服务端已经带单位时不要叠加成「…热度 热度」。
+        val already = response()
+        videoOf(already)
+            .put(
+                "sub_title_list",
+                JSONArray().put(JSONObject().put("content", "2087万热度").put("data_type", 27)),
+            )
+        assertEquals(
+            "2087万热度",
+            FilteredDiscoveryParser.parse(already.toString(), null).items.single().heat,
+        )
+
+        // 只有分类标签时没有热度，调用方回退到角标文案。
+        val none = response()
+        videoOf(none)
+            .put(
+                "sub_title_list",
+                JSONArray().put(JSONObject().put("content", "都市").put("data_type", 3)),
+            )
+        assertEquals("", FilteredDiscoveryParser.parse(none.toString(), null).items.single().heat)
+    }
+
     @Test
     fun cursorIsServerIssuedAndInvalidOrMissingDataCannotPretendToBeComplete() {
         val first = FilteredDiscoveryParser.parse(response().toString(), null)

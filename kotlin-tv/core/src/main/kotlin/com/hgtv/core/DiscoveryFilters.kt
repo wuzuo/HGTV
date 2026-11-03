@@ -90,6 +90,25 @@ class DiscoveryBrowserState {
 }
 
 internal object FilteredDiscoveryParser {
+    /**
+     * 卡片副标题用的热度文案。
+     *
+     * 这个接口没有搜索接口那样的 `hot_score_data`，热度藏在 `sub_title_list` 里：
+     * `data_type == 27` 的那一项，正式客户端会给它配一张火焰图标，内容形如「1335万」。
+     * 补上单位后，和搜索结果、排行榜的热度文案保持一致。
+     */
+    private fun heatOf(video: JSONObject): String {
+        val rows = video.optJSONArray("sub_title_list") ?: return ""
+        for (index in 0 until rows.length()) {
+            val row = rows.optJSONObject(index) ?: continue
+            if (row.optInt("data_type") != 27) continue
+            val text = row.str("content").trim()
+            if (text.isEmpty()) continue
+            return if ("热度" in text) text else "${text}热度"
+        }
+        return ""
+    }
+
     fun parse(raw: String, cursor: DiscoveryCursor?): FilteredDiscoveryPage {
         val root =
             try {
@@ -124,6 +143,7 @@ internal object FilteredDiscoveryParser {
                         video.str("video_desc"),
                         video.optInt("episode_cnt").takeIf { it > 0 }?.let { "共 $it 集" }.orEmpty(),
                         tags,
+                        heatOf(video),
                     )
                 }
                 .distinctBy { it.id }

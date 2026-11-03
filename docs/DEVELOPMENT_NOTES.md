@@ -307,3 +307,39 @@ adb shell appops set io.github.wuzuo.hgtv MANAGE_EXTERNAL_STORAGE allow
 * 这**不是**给所有人共用一套身份的方案。多 IP 共用同一个 `device_id` 是典型的共享账号特征，
   被封之后该身份对所有人生效（包括官方 App），所以只适合一人一份、各自填自己的。
 * 长期不用的身份会不会被服务端降级，没有数据。真降级了会自动退回注册，功能不受影响。
+
+## 2026-11-03 列表卡片副标题：集数让位给热度
+
+### 现象
+
+找剧、收藏、历史、预约四页的卡片，海报角标已经写了「共 N 集」，下面那行又写一遍。
+历史页更明显：副标题是两行（集数 + 进度），卡片因此比别的页高；聚焦时描边还会缺一角。
+
+### 热度从哪来
+
+| 接口 | 字段 | 形如 |
+| --- | --- | --- |
+| 网页搜索 `api/search/result` | `video_data.hot_score_data.text` | `4597万热度` |
+| 找剧筛选 `distribution/category/landpage/v` | `sub_title_list` 里 `data_type == 27` 的那项 | `1335万`（正式客户端给它配火焰图标） |
+| 排行榜 `heatText` | 本来就有 | `9667万热度` |
+
+找剧接口没有 `hot_score_data`，只能从 `sub_title_list` 里挑 `data_type == 27`，再补上「热度」，
+这样三处的文案才统一。`Series` 因此新增 `heat` 字段，跟着 `toJson` / `fromJson` 进本地缓存；
+取不到时为空串，列表回退到原来的 `badge`。
+
+### 改动
+
+* `ContinuousCatalogView` 卡片副标题：榜单 `position.heat` → `item.heat` → `item.badge`。
+* `catalogGrid` 副标题统一单行：收藏 / 历史 / 预约写进度，排行榜写热度，找剧与首页写 `item.heat`。
+* `EpisodeSummary.label` 增加 `withCount`；为 false 时只返回进度那一行（待上线写成
+  「待上线，暂不可观看」），默认行为不变。
+* 卡片副标题固定 `maxLines = minLines = 1`、`minHeight = 19dp`，各页卡片高度才对得齐。
+* `revealFocusedRow` 与键盘导航的滚动各预留 12dp：卡片聚焦会放大 1.02 并带一圈光晕，
+  按未放大的行边界贴边滚动，历史页这种矮视口就会把描边切掉一边。
+
+### 验证
+
+真机（Android 15，debug 包临时加 `.verify` 后缀避免覆盖正式版）逐页截图：
+找剧六张卡分别是「4799万热度 / 2010万热度 / 4054万热度 / 2180万热度 / 4435万热度 / 1368万热度」，
+海报角标仍是「共 12 集」；历史页「看到第 1 集 · 00:23」单行，放大后四条描边闭合；
+排行榜不受影响（「第 1 名」+「共 102 集」+「9667万热度」）。

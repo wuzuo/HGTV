@@ -907,4 +907,12 @@ class ContentRepositoryTest {
         assertEquals("456", repo.search("短剧", 1, ContentType.SHORT).items.single().id)
         assertEquals(2, paths.size)
     }
+
+    /** 本地收藏 / 历史会把 Series 存成 JSON；热度必须跟着一起往返，否则重启后卡片又变回集数。 */
+    @Test
+    fun seriesJsonRoundTripsHeat() {
+        val series = Series("1", "剧名", "封面", "简介", "共 20 集", "标签", "1335万热度")
+        assertEquals(series, Series.fromJson(series.toJson()))
+        assertEquals("", Series.fromJson(Series("1", "剧名").toJson()).heat)
+    }
 }

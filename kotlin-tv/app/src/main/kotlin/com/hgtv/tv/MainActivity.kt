@@ -892,7 +892,13 @@ class MainActivity : Activity() {
         return if (total > 0) "共 $total 集" else EpisodeSummary.poster(series.badge)
     }
 
-    private fun collectionEpisodeLabel(series: Series): String {
+    /**
+     * 收藏 / 历史 / 预约卡片的副标题。
+     *
+     * [withCount] 为 false 时只返回进度那一行：海报角标已经写了「共 N 集」，卡片下方再写一遍
+     * 既是重复，也会把这几页的卡片撑得比其他页高。
+     */
+    private fun collectionEpisodeLabel(series: Series, withCount: Boolean = true): String {
         val remote = isAccountFavorites() || isAccountHistory() || tab == 5
         val cloud = if (remote) cloudAccount.progress(series.id) else null
         val local = if (!remote) library.progress(series.id) else null
@@ -914,6 +920,7 @@ class MainActivity : Activity() {
             markedWatched = !remote && library.watched(series.id),
             pending = tab == 5 && !reservationOnline,
             added = update?.added ?: 0,
+            withCount = withCount,
         )
     }
 
@@ -1715,21 +1722,28 @@ class MainActivity : Activity() {
                         else null
                 val summary =
                     when {
-                        tab == 5 -> collectionEpisodeLabel(item) + "\n" + selectionStatus(item)
-                        tab == 3 -> collectionEpisodeLabel(item)
+                        // 卡片副标题一律只占一行：集数交给海报角标，这里只写不重复的那条信息。
+                        // 收藏 / 历史 / 预约写进度，排行榜写热度，找剧与首页也写热度。
+                        tab == 5 ->
+                            // 待上线时状态本身就是「待上线」，再拼一遍预约状态只是重复。
+                            if (!reservationOnline) collectionEpisodeLabel(item, withCount = false)
+                            else
+                                listOf(collectionEpisodeLabel(item, withCount = false), selectionStatus(item))
+                                    .filter { it.isNotBlank() }
+                                    .joinToString(" · ")
+                        tab == 3 -> collectionEpisodeLabel(item, withCount = false)
                         tab == 4 ->
-                            collectionEpisodeLabel(item) +
+                            collectionEpisodeLabel(item, withCount = false) +
                                 (progress?.let { " · ${formatTime(it.position)}" } ?: "")
                         tab == 2 -> position?.heat?.ifBlank { "热度暂无" } ?: "热度暂无"
-                        else -> item.badge
+                        else -> item.heat.ifBlank { item.badge }
                     }
                 val badge =
-                    text(summary, 12f, if (tab == 2 || isLocalFavorites()) accent else muted)
+                    text(summary, 12f, if (tab == 2 || isLocalFavorites() || tab <= 1) accent else muted)
                         .apply {
-                            maxLines = if (tab == 5) 3 else if (tab == 3 || tab == 4) 2 else 1
-                            minLines = maxLines
-                            minHeight =
-                                dp(if (tab == 5) 50 else if (tab == 3 || tab == 4) 34 else 19)
+                            maxLines = 1
+                            minLines = 1
+                            minHeight = dp(19)
                             ellipsize = TextUtils.TruncateAt.END
                             setPadding(dp(3), 0, 0, 0)
                         }
@@ -1780,16 +1794,18 @@ class MainActivity : Activity() {
                         preview?.show(item, selectionStatus(item))
                         if (!restoringScroll)
                             scroll.post {
+                                // 和 revealFocusedRow 一样留余量：贴边滚动会切掉放大后的描边与光晕。
+                                val slack = dp(12)
                                 scroll.smoothScrollTo(
                                     0,
                                     when {
-                                        line.top < scroll.scrollY -> line.top
-                                        line.bottom > scroll.scrollY + scroll.height ->
+                                        line.top - slack < scroll.scrollY -> line.top - slack
+                                        line.bottom + slack > scroll.scrollY + scroll.height ->
                                             // 一行超过视口时优先保留海报顶端可见，再处理下方副标题。
-                                            if (line.height >= scroll.height) line.top
-                                            else line.bottom - scroll.height
+                                            if (line.height + slack * 2 >= scroll.height) line.top - slack
+                                            else line.bottom + slack - scroll.height
                                         else -> scroll.scrollY
-                                    },
+                                    }.coerceAtLeast(0),
                                 )
                             }
                     }
@@ -2024,15 +2040,21 @@ class MainActivity : Activity() {
         }
     }
 
-    /** 把带焦点的那一行滚进视口；一行比视口还高时优先露出海报顶端。 */
+    /**
+     * 把带焦点的那一行滚进视口；一行比视口还高时优先露出海报顶端。
+     *
+     * 定位要留出 [slack] 的余量：卡片聚焦时会放大，外面还有一圈光晕和描边，
+     * 按未放大的行边界贴边滚动会把这一圈切掉，看起来就是「边框不完整」。
+     */
     private fun revealFocusedRow(scroll: ScrollView, cards: List<View>) {
         val line = (cards.firstOrNull { it.hasFocus() }?.parent as? View) ?: return
+        val slack = dp(12)
         val y =
             when {
-                line.top < scroll.scrollY -> line.top
-                line.bottom > scroll.scrollY + scroll.height ->
-                    if (line.height >= scroll.height) line.top
-                    else line.bottom - scroll.height
+                line.top - slack < scroll.scrollY -> line.top - slack
+                line.bottom + slack > scroll.scrollY + scroll.height ->
+                    if (line.height + slack * 2 >= scroll.height) line.top - slack
+                    else line.bottom + slack - scroll.height
                 else -> scroll.scrollY
             }
         scroll.scrollTo(0, y.coerceAtLeast(0))
@@ -2338,7 +2360,7 @@ class MainActivity : Activity() {
             library
                 .favorites()
                 .firstOrNull { it.id == changedId }
-                ?.let { favoriteBadges[changedId]?.text = collectionEpisodeLabel(it) }
+                ?.let { favoriteBadges[changedId]?.text = collectionEpisodeLabel(it, withCount = false) }
         }
     }
 
@@ -2416,7 +2438,8 @@ class MainActivity : Activity() {
         if (screen != "catalog" || !library.isLoaded) return
         favoriteBadges.forEach { (id, label) ->
             val value =
-                library.favorites().firstOrNull { it.id == id }?.let(::collectionEpisodeLabel)
+                library.favorites().firstOrNull { it.id == id }
+                    ?.let { collectionEpisodeLabel(it, withCount = false) }
                     ?: library.favoriteLabel(id)
             if (label.text.toString() != value) label.text = value
         }

@@ -16,7 +16,7 @@ import org.robolectric.annotation.LooperMode
 
 /**
  * 观看历史 / 收藏这类本机片库页：上方头部很高，网格视口只剩半屏。
- * 这里守住两件事——海报不被压扁、副标题两行都还在（不再退化成只剩「看到第 N 集」）。
+ * 这里守住两件事——海报不被压扁、副标题不被压掉（且只有一行，集数已经交给海报角标）。
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [26], qualifiers = "w960dp-h540dp-land-mdpi")
@@ -27,7 +27,7 @@ class HistoryCardLayoutTest {
         target.javaClass.getDeclaredField(name).apply { isAccessible = true }.get(target)
 
     @Test
-    fun historyCardsKeepPosterRatioAndFullLabels() {
+    fun historyCardsKeepPosterRatioAndASingleLineLabel() {
         val controller = Robolectric.buildActivity(MainActivity::class.java).create()
         val activity = controller.get()
         try {
@@ -71,8 +71,10 @@ class HistoryCardLayoutTest {
                     poster.height >= (natural * .8f).toInt(),
                 )
                 val badge = card.getChildAt(2) as TextView
-                assertTrue("副标题应保留两行：${badge.text}", badge.maxLines >= 2)
-                assertTrue("副标题文字应含集数与进度：${badge.text}", badge.text.contains("\n"))
+                // 集数由海报角标展示，副标题只留进度，固定一行——各页卡片高度才一致。
+                assertEquals("副标题只占一行：${badge.text}", 1, badge.maxLines)
+                assertTrue("副标题不该换行重复集数：${badge.text}", !badge.text.contains("\n"))
+                assertTrue("副标题应说明进度：${badge.text}", badge.text.startsWith("看到第"))
                 val title = card.getChildAt(1) as TextView
                 assertTrue("标题应保留两行：${title.maxLines}", title.maxLines >= 2)
             }

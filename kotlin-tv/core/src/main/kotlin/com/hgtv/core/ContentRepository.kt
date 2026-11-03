@@ -59,6 +59,13 @@ data class Series(
     val description: String = "",
     val badge: String = "",
     val tags: String = "",
+    /**
+     * 接口下发的热度文案，形如「4597万热度」。
+     *
+     * 列表卡片上集数已经由海报角标承担，副标题改用它，避免同一条目重复写两遍集数。
+     * 取不到时为空串，调用方自行回退到 [badge]。
+     */
+    val heat: String = "",
 ) {
     fun toJson() =
         JSONObject()
@@ -68,6 +75,7 @@ data class Series(
             .put("description", description)
             .put("badge", badge)
             .put("tags", tags)
+            .put("heat", heat)
 
     companion object {
         fun fromJson(o: JSONObject) =
@@ -78,6 +86,7 @@ data class Series(
                 o.str("description"),
                 o.str("badge"),
                 o.str("tags"),
+                o.str("heat"),
             )
     }
 }
@@ -306,8 +315,13 @@ constructor(
             (0 until minOf(tags.length(), 5)).joinToString(" · ") {
                 tags.optJSONObject(it)?.str("name") ?: tags.optString(it)
             },
+            heatOf(o),
         )
     }
+
+    /** 接口把热度包在 `hot_score_data` 里，`text` 是已经格式化好的文案；缺失时返回空串。 */
+    private fun heatOf(row: JSONObject): String =
+        row.optJSONObject("hot_score_data")?.str("text").orEmpty()
 
     private fun valid(rows: List<Series>) =
         rows
@@ -547,6 +561,7 @@ constructor(
                         video.str("video_desc"),
                         if (count > 0) "全 $count 集" else video.str("rec_text"),
                         video.str("sub_title"),
+                        heatOf(video),
                     )
             }
         }

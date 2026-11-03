@@ -470,7 +470,11 @@ internal class CatalogPosterCard(context: Context) : LinearLayout(context) {
 
     fun show(item: Series, position: RankPosition? = null) {
         title.text = item.title
-        badge.text = position?.heat?.takeIf { it.isNotBlank() } ?: item.badge
+        // 集数已经由海报角标承担，副标题不再重复：优先用榜单自带的热度，其次用接口下发的热度，
+        // 两者都没有才回退到原来的角标文案。
+        badge.text =
+            position?.heat?.takeIf { it.isNotBlank() }
+                ?: item.heat.ifBlank { item.badge }
         val episodesLabel = EpisodeSummary.poster(item.badge)
         episodes.text = episodesLabel
         episodes.visibility = if (episodesLabel.isNotBlank()) View.VISIBLE else View.GONE

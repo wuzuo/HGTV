@@ -21,6 +21,14 @@ class EpisodeSummaryTest {
         assertEquals(0, EpisodeSummary.total("80万热度"))
     }
 
+    /** 列表卡片只留进度：海报角标已经写了集数，副标题再写一遍会多占一行。 */
+    @Test
+    fun cardSubtitleDropsTheCountWhenThePosterShowsIt() {
+        assertEquals("看到第 12 集", EpisodeSummary.label(80, 11, withCount = false))
+        assertEquals("暂无本机进度", EpisodeSummary.label(80, withCount = false))
+        assertEquals("待上线，暂不可观看", EpisodeSummary.label(0, pending = true, withCount = false))
+    }
+
     @Test
     fun posterExtractsEpisodeCountForCornerBadge() {
         assertEquals("全 80 集", EpisodeSummary.poster("全 80 集"))

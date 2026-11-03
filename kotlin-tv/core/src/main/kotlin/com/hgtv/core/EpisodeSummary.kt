@@ -21,8 +21,9 @@ object EpisodeSummary {
         markedWatched: Boolean = false,
         pending: Boolean = false,
         added: Int = 0,
+        withCount: Boolean = true,
     ): String {
-        if (pending) return "待上线\n暂不可观看"
+        if (pending) return if (withCount) "待上线\n暂不可观看" else "待上线，暂不可观看"
         val count = if (total > 0) "共 $total 集" + (if (added > 0) "（+$added）" else "") else "总集数待更新"
         val progress =
             when {
@@ -33,6 +34,8 @@ object EpisodeSummary {
                 !ready -> "账户进度待刷新"
                 else -> "近50条无观看记录"
             }
-        return "$count\n$progress"
+        // 列表卡片的海报角标已经写了「共 N 集」，副标题再写一遍只是占一行高度；
+        // 这时只要进度那一行，各页卡片高度也才统一得起来。
+        return if (withCount) "$count\n$progress" else progress
     }
 }
