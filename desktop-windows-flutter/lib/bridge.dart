@@ -34,6 +34,7 @@ class Bridge {
     log.writeln('--- ${DateTime.now().toIso8601String()} ---');
     log.writeln('java=$java');
     log.writeln('bridge=$bridgeDir');
+    log.writeln('root=$root');
 
     final process = await Process.start(
       java,
@@ -46,6 +47,9 @@ class Bridge {
         'com.hgtv.bridge.MainKt',
       ],
       workingDirectory: bridgeDir,
+      // 子进程的工作目录是 bridge 目录，但用户放配置的直觉位置是 exe 旁边。
+      // 把程序根目录显式告诉它，免得配置放在程序目录却读不到（且没有任何提示）。
+      environment: {'HGTV_APP_ROOT': root},
       runInShell: false,
     );
     process.stderr.transform(utf8.decoder).listen(log.writeln);

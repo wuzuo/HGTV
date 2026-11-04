@@ -516,6 +516,146 @@ class MainActivity : Activity() {
         runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
     }
 
+    /** 设置页里那行「设备身份配置」，重建设置页时换新引用。 */
+    private var identitySetting: TextView? = null
+
+    private var identityPromptDialog: AlertDialog? = null
+
+    private companion object {
+        /** Android 6–10 上申请 READ_EXTERNAL_STORAGE 的请求码。 */
+        const val REQUEST_STORAGE = 0x1001
+    }
+
+    /**
+     * 没有「所有文件访问」权限时解释一次。
+     *
+     * 只解释一次：用户选了「暂不需要」就记住，之后启动不再打扰——不用这个配置的人本来就不该
+     * 反复看到这段话。用户点进设置页主动查看时不受这个限制。
+     */
+    private fun maybePromptIdentityPermission() {
+        if (isFinishing || IdentityStatus.hasAllFilesAccess(this)) return
+        val prefs = getSharedPreferences("device_identity", MODE_PRIVATE)
+        if (prefs.getBoolean("storage_prompted", false)) return
+        prefs.edit().putBoolean("storage_prompted", true).apply()
+        if (!IdentityStatus.needsSettingsJump()) {
+            // Android 6–10：这个权限是运行时弹窗授予的，直接申请，系统对话框遥控也能操作。
+            runCatching {
+                requestPermissions(
+                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE),
+                    REQUEST_STORAGE,
+                )
+            }
+            return
+        }
+        if (identityPromptDialog?.isShowing == true) return
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle("读取设备身份配置")
+                .setMessage(
+                    "HGTV 可以从 /sdcard/hgtv/device-identity.txt 读取你设备上的播放身份，" +
+                        "省掉每次播放前的设备注册。\n\n" +
+                        "要读这个目录，需要在系统设置里给 HGTV 开启「所有文件访问」权限。" +
+                        "不开也能正常播放，只是每集多注册一次设备。"
+                )
+                .setPositiveButton("去开启") { _, _ -> openAllFilesAccessSettings(this) }
+                .setNegativeButton("暂不需要", null)
+                .create()
+        identityPromptDialog = dialog
+        dialog.setOnDismissListener { identityPromptDialog = null }
+        dialog.show()
+        decorateDialog(dialog)
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus()
+    }
+
+    /**
+     * 设置页那一行文案：三种状态各说一句，用户不用再靠猜。
+     *
+     * 这一行是单行省略的（设置项统一 maxLines=1），所以状态词控制在四个字以内；
+     * 读到的具体是哪份身份、尾号多少，点进去看详情。
+     */
+    private fun identityStatusLabel(): String =
+        when (IdentityStatus.of(this)) {
+            is IdentityStatus.Ready -> "设备身份配置  ·  已读取"
+            IdentityStatus.NoPermission -> "设备身份配置  ·  需授权"
+            IdentityStatus.NotConfigured -> "设备身份配置  ·  未放置"
+        }
+
+    /** 点设置页那一行：已读到的看详情，缺权限的给入口，没配置的讲怎么放。 */
+    private fun showIdentityStatus() {
+        when (val status = IdentityStatus.of(this)) {
+            is IdentityStatus.Ready ->
+                showIdentityDialog(
+                    "设备身份配置",
+                    "读取位置：${status.file.absolutePath}\n\n" +
+                        "device_id ${status.identity.deviceId}\n" +
+                        "install_id ${status.identity.installId}\n" +
+                        "cdid ${status.identity.cdid}\n\n" +
+                        "播放时直接复用这份身份，不再注册新设备。同一份身份不要和官方客户端同时播放。",
+                )
+            IdentityStatus.NoPermission -> {
+                val jump = IdentityStatus.needsSettingsJump()
+                showIdentityDialog(
+                    if (jump) "需要「所有文件访问」权限" else "需要读取存储的权限",
+                    if (jump)
+                        "Android 11 起，应用读 /sdcard/hgtv/ 这类共享目录需要「所有文件访问」权限。" +
+                            "没有这个权限时，系统会把目录对你隐藏——文件明明放着也读不到，而且不报错。\n\n" +
+                            "开启后回到 HGTV 会重新读取。"
+                    else
+                        "读取 /sdcard/hgtv/ 下的配置需要存储权限。没有授权时文件读不到，" +
+                            "程序只会当作「没有配置」继续走自动注册。\n\n" +
+                            "授权后回到 HGTV 会重新读取。",
+                    action = if (jump) "去开启" else "去授权",
+                    onAction = {
+                        if (jump) openAllFilesAccessSettings(this)
+                        else
+                            runCatching {
+                                requestPermissions(
+                                    arrayOf(android.Manifest.permission.READ_EXTERNAL_STORAGE),
+                                    REQUEST_STORAGE,
+                                )
+                            }
+                    },
+                )
+            }
+            IdentityStatus.NotConfigured ->
+                showIdentityDialog(
+                    "还没有设备身份配置",
+                    "把 device-identity.txt 放到 /sdcard/hgtv/ 目录下，重启 HGTV 即可生效。\n\n" +
+                        "文件内容三行：\n" +
+                        "device_id=...\n" +
+                        "install_id=...\n" +
+                        "cdid=...\n\n" +
+                        "不放也能正常播放，只是每集要多注册一次设备。",
+                )
+        }
+    }
+
+    /** [action] 为空时只给「关闭」；否则另给一个按钮，点了执行 [onAction]。 */
+    private fun showIdentityDialog(
+        title: String,
+        message: String,
+        action: String? = null,
+        onAction: (() -> Unit)? = null,
+    ) {
+        val builder = AlertDialog.Builder(this).setTitle(title).setMessage(message)
+        if (action == null || onAction == null) {
+            builder.setPositiveButton("关闭", null)
+        } else {
+            builder.setPositiveButton(action) { _, _ -> onAction() }
+            builder.setNegativeButton("取消", null)
+        }
+        val dialog = builder.create()
+        dialog.show()
+        decorateDialog(dialog)
+        dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus()
+    }
+
+    /** 从系统设置回来后刷新那一行：权限刚开的话，这时才读得到原本被隐藏的文件。 */
+    private fun refreshIdentitySettingLabel() {
+        val view = identitySetting ?: return
+        if (view.isAttachedToWindow) view.text = identityStatusLabel()
+    }
+
     // 启动入口：创建根容器，初始化账户、更新和媒体控制，再异步读取本机记录。
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -552,7 +692,12 @@ class MainActivity : Activity() {
         setContentView(root)
         // 先把提示通道接上，再主动探一次配置：读到就在首屏弹一次提示，读不到保持安静。
         DeviceIdentityMonitor.addListener(identityNoticeListener)
-        root.post { DeviceIdentityMonitor.resolve() }
+        root.post {
+            DeviceIdentityMonitor.resolve()
+            // 没权限时配置会被系统静默藏起来，「读不到」和「没配置」表现完全一样，
+            // 不给一句话解释的话用户只能猜，所以首次遇到明说一次。
+            maybePromptIdentityPermission()
+        }
         CodecCapabilities.init(this)
         CodecCapabilities.logDeviceCapabilities()
         cloudAccount =
@@ -2581,6 +2726,8 @@ class MainActivity : Activity() {
                 chooseTheme(themeButton)
             }
         heading(device, "应用与更新", "检查新版、查看开源信息")
+        // 配置读没读到、为什么没读到，在这里常驻可查：Toast 一闪而过，过后就没法确认了。
+        identitySetting = setting(device, identityStatusLabel()) { showIdentityStatus() }
         lateinit var updates: TextView
         updates = setting(device, "版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         lateinit var about: TextView
@@ -4641,6 +4788,10 @@ class MainActivity : Activity() {
         main.removeCallbacks(tick)
         main.post(tick)
         updater.resume()
+        // 用户可能刚从系统设置开完「所有文件访问」回来：重探一次，之前被隐藏的配置这时才读得到。
+        // Monitor 内部按配置内容去重，重复调用不会再弹一遍提示。
+        DeviceIdentityMonitor.resolve()
+        refreshIdentitySettingLabel()
         if (library.isLoaded) {
             if (initialCatalogPending) showCatalog(load = true)
             else if (restoreStoppedPage) {

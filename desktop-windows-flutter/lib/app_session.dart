@@ -19,6 +19,11 @@ class AppSession extends ChangeNotifier {
   /// 本地设备身份配置的一句话状态（空串表示没有配置，走自动注册）。
   String identityStatus = '';
 
+  /// 结构化状态，给设置页做自查用（[identityStatus] 只够状态栏显示）。
+  bool identityConfigured = false;
+  bool identityRejected = false;
+  String identityFile = '';
+
   bool get loggedIn => account?.loggedIn == true && (account?.id?.isNotEmpty ?? false);
 
   void setAccount(AccountInfo? value) {
@@ -34,6 +39,26 @@ class AppSession extends ChangeNotifier {
   void setIdentityStatus(String value) {
     if (identityStatus == value) return;
     identityStatus = value;
+    notifyListeners();
+  }
+
+  /// [notice] 为空表示「没有配置」，此时状态栏不显示，但设置页要能说明原因。
+  void setIdentityState({
+    required String notice,
+    required bool configured,
+    required bool rejected,
+    required String file,
+  }) {
+    if (identityStatus == notice &&
+        identityConfigured == configured &&
+        identityRejected == rejected &&
+        identityFile == file) {
+      return;
+    }
+    identityStatus = notice;
+    identityConfigured = configured;
+    identityRejected = rejected;
+    identityFile = file;
     notifyListeners();
   }
 

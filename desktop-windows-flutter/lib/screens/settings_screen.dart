@@ -16,7 +16,8 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      animation: session.store,
+      // 设备身份状态由 5 秒轮询更新，设置页要跟着刷新，不能只听本地偏好。
+      animation: Listenable.merge([session.store, session]),
       builder: (context, _) {
         final store = session.store;
         return ListView(
@@ -92,6 +93,42 @@ class SettingsScreen extends StatelessWidget {
               ),
             ]),
             const SizedBox(height: 20),
+            _section(context, '设备身份', [
+              Text(
+                _identityHeadline,
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
+              ),
+              const SizedBox(height: 6),
+              SelectableText(
+                _identityDetail,
+                style: TextStyle(
+                  fontSize: 11,
+                  height: 1.7,
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: () => _openFolder(
+                      context,
+                      session.identityConfigured && session.identityFile.isNotEmpty
+                          ? File(session.identityFile).parent.path
+                          : _programDir,
+                    ),
+                    icon: const Icon(Icons.folder_open, size: 18),
+                    label: Text(session.identityConfigured ? '打开所在文件夹' : '打开程序目录'),
+                  ),
+                  const SizedBox(width: 10),
+                  OutlinedButton(
+                    onPressed: () => _showIdentityHelp(context),
+                    child: const Text('如何配置'),
+                  ),
+                ],
+              ),
+            ]),
+            const SizedBox(height: 20),
             _section(context, '关于', [
               Text('${AppInfo.product} ${AppInfo.version}'),
               const SizedBox(height: 4),
@@ -158,6 +195,62 @@ class SettingsScreen extends StatelessWidget {
         children: [
           SectionTitle(title),
           ...children,
+        ],
+      ),
+    );
+  }
+
+  /// 打包布局下 exe 所在目录就是程序目录；`flutter run` 时是 Debug 输出目录。
+  String get _programDir => File(Platform.resolvedExecutable).parent.path;
+
+  String get _userHome =>
+      Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
+
+  String get _identityHeadline {
+    if (session.identityRejected) return '配置已失效，当前按自动注册播放';
+    if (session.identityConfigured) {
+      return session.identityStatus.isEmpty ? '已读取设备身份配置' : session.identityStatus;
+    }
+    return '未放置配置，当前每次播放都会注册一台新设备';
+  }
+
+  String get _identityDetail {
+    if (session.identityConfigured && session.identityFile.isNotEmpty) {
+      return '读取位置：${session.identityFile}';
+    }
+    return '把 device-identity.txt 放到下面任一位置，重启客户端即生效：\n'
+        '· $_programDir${Platform.pathSeparator}device-identity.txt\n'
+        '· $_userHome${Platform.pathSeparator}.hgtv${Platform.pathSeparator}device-identity.txt';
+  }
+
+  void _showIdentityHelp(BuildContext context) {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('设备身份配置'),
+        content: const SizedBox(
+          width: 480,
+          child: SingleChildScrollView(
+            child: Text(
+              'HGTV 可以复用一台真实设备的播放身份，省掉每次播放前的设备注册。'
+              '身份来自官方「红果免费短剧」客户端，在已 root 的手机上用配套小工具读出后，'
+              '存成纯文本即可。\n\n'
+              '文件名固定为 device-identity.txt，内容三行：\n'
+              'device_id=...\n'
+              'install_id=...\n'
+              'cdid=...\n\n'
+              '放置位置（任选其一）：\n'
+              '1. 程序目录，即 hgtv_windows.exe 同级；\n'
+              '2. 用户目录下的 .hgtv 文件夹，即 %USERPROFILE%\\.hgtv\\\n\n'
+              '放好后重启客户端，底部状态栏与这一页都会显示「已读取」。'
+              '不放也能正常播放，只是每集多注册一次设备。\n\n'
+              '注意：同一份身份不要和手机上的官方客户端同时播放，否则会被判成设备异常。',
+              style: TextStyle(fontSize: 13, height: 1.7),
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('关闭')),
         ],
       ),
     );

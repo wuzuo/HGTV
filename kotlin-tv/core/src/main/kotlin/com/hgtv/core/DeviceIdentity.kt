@@ -43,7 +43,9 @@ data class DeviceIdentity(
  *
  * * **Android TV**：`/sdcard/hgtv/device-identity.txt`（直接用文件管理器或 `adb push` 放进去），
  *   备选 `/sdcard/Android/media/<包名>/device-identity.txt`、应用私有外部目录、内部目录。
- * * **Windows**：程序目录下的 `device-identity.txt`，备选 `%USERPROFILE%\.hgtv\device-identity.txt`。
+ * * **Windows**：`hgtv_windows.exe` 同级的程序目录（前端通过 `HGTV_APP_ROOT` 告诉 bridge 进程，
+ *   因为 bridge 自己的工作目录是 `<程序目录>\bridge`），备选该工作目录与
+ *   `%USERPROFILE%\.hgtv\device-identity.txt`。
  *
  * ## 注意
  *

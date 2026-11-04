@@ -170,7 +170,13 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
         : configured
         ? '已读取设备身份配置（device_id …$tail）'
         : '';
-    session.setIdentityStatus(notice);
+    final file = status['file'];
+    session.setIdentityState(
+      notice: notice,
+      configured: configured,
+      rejected: rejected,
+      file: file is String ? file : '',
+    );
 
     final previous = _identityNotice;
     _identityNotice = notice;

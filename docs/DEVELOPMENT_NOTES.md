@@ -380,3 +380,78 @@ adb shell appops set io.github.wuzuo.hgtv MANAGE_EXTERNAL_STORAGE allow
   `{"configured":true,...,"deviceId":"111"}` 与 `{"configured":false,...,"deviceId":null}`，均 200。
 * `:app:testDebugUnitTest`、`:app:lintDebug`、`:app:assembleDebug`、`flutter analyze`、
   `flutter test` 全通过（core 仅既有的 Windows 原子重命名用例失败，与本次无关）。
+
+## 2026-11-04 设备身份配置读不到时要说清原因
+
+### 现象
+
+用户把 `device-identity.txt` 放进 `/sdcard/hgtv/`，App 却表现得像「没有配置」：不提示、照常
+自动注册，也没有任何错误。查下来 `appops get <pkg> MANAGE_EXTERNAL_STORAGE` 是 `default`
+（且有过一次 `rejectTime`）——**没给存储权限**。
+
+### 为什么完全无声
+
+Android 11+ 的分区存储对没有「所有文件访问」权限的应用，会把 `/sdcard/` 下的共享目录整体隐藏：
+`File.isFile()` 直接返回 `false`，不抛异常、不写日志。所以程序没法区分「没放文件」和「放了但被挡」，
+只能按「没配置」处理。
+
+更麻烦的是 Android 6–10 这条老路：manifest 里声明了 `READ_EXTERNAL_STORAGE`，但代码从来没有
+在运行时申请过，所以那些设备上同样读不到。
+
+### 改法
+
+* `IdentityStatus`（`DeviceIdentityAccess.kt`，app 层）把状态收敛成三种：`Ready` / `NoPermission` /
+  `NotConfigured`，判定逻辑抽成纯函数 `resolveIdentityStatus(loaded, permitted)` 以便单测。
+  `hasAllFilesAccess(context)` 按版本分三段：≥30 看 `Environment.isExternalStorageManager()`，
+  23–29 看 `READ_EXTERNAL_STORAGE` 运行时授权，<23 安装即授予。
+* 首次启动若没权限，弹一次说明（只一次，`SharedPreferences` 记 `storage_prompted`）：
+  11+ 跳 `ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION`（失败回退到应用列表页），
+  6–10 直接 `requestPermissions`。
+* `onResume` 里重新 `DeviceIdentityMonitor.resolve()`：从系统设置开完权限回来，原本被隐藏的文件
+  这时才读得到，提示与设置页文案同步更新（Monitor 内部按配置内容去重，不会重复弹提示）。
+* 设置页「应用与更新」列新增一行「设备身份配置 · 已读取／需授权／未放置」，点进去：已读到的看
+  文件路径与三个字段，缺权限的给开启入口，没配置的讲怎么放。这一行是单行省略的，所以状态词
+  控制在四个字以内，具体尾号放在详情里。
+
+### 验证
+
+* `DeviceIdentityStatusTest` 3 例：读到配置即为 Ready（即使没权限，因为备选目录不需要权限）、
+  有权限无配置为 NotConfigured、无权限无配置必须是 NoPermission（不能误报成「没配置」）。
+* 模拟器（Android TV / SDK 36）实测：撤销 `MANAGE_EXTERNAL_STORAGE` 后启动 → 弹「读取设备身份配置」
+  对话框且焦点在「去开启」；确认键跳到 `AllFilesAccessActivity`；授权返回 → 浮层提示
+  「已读取设备身份配置（device_id 尾号 7289）」；设置页该行显示「已读取」。
+* `:app:testDebugUnitTest`、`:app:lintDebug`、`:app:assembleDebug` 全通过。
+
+## 2026-11-04 Windows 端把配置放在程序目录却读不到
+
+### 现象
+
+用户把 `device-identity.txt` 放到 `D:/Program Files\HGTV\`（`hgtv_windows.exe` 旁边），
+Windows 客户端底部状态栏没有任何「已读取」提示，看上去像功能没生效。
+
+### 原因
+
+bridge 是用 `Process.start(..., workingDirectory: bridgeDir)` 起的，工作目录是
+`<程序目录>\bridge`；而 bridge 里写的是相对路径 `File("device-identity.txt")`，
+于是实际去找 `<程序目录>\bridge\device-identity.txt`。用户放的位置比它高了一级，
+读不到就按「没有配置」处理，而「没有配置」按设计是不提示的（自动注册是正常路径），
+所以表现成完全静默。文档写的是「程序目录」，实现读的却是 `bridge` 子目录，本身也不一致。
+
+### 改法
+
+* Flutter 启动 bridge 时通过 `environment: {'HGTV_APP_ROOT': root}` 把程序根目录传下去
+  （`root` 就是 `hgtv_windows.exe` 所在目录；`flutter run` 时是仓库根）。
+* bridge 用 `HGTV_APP_ROOT` 拼首选路径，`fallbacks` 保留本进程工作目录
+  （打包布局下即 `<程序目录>\bridge`，兼容已经这么放的用户）与 `%USERPROFILE%\.hgtv\`。
+* Windows 设置页新增「设备身份」区块：显示「已读取（尾号 xxxx）／未放置／已失效」、
+  实际读取到的文件路径、以及没配置时该放到哪；两个按钮分别是「打开所在文件夹」
+  （已读取时）与「如何配置」。状态每 5 秒随轮询刷新，`AppSession` 里补了结构化的
+  `identityConfigured/identityFile/identityRejected`，状态栏仍然只显示一句话。
+
+### 验证
+
+* 用安装目录的 `runtime\bin\java.exe` 手工起 bridge，`/identity` 四种摆放依次验证：
+  程序目录有文件（`configured:true`，`file` 指向程序目录）、只有 `bridge` 目录有文件
+  （`configured:true`，兼容旧放法）、两处都没有（`configured:false`）、
+  程序目录空但 `bridge` 有（回退成功）。
+* `flutter analyze` 无问题，`flutter test` 19 过 1 跳过（跳过的是需要真 bridge 的那条）。

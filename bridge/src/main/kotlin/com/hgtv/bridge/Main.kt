@@ -14,10 +14,15 @@ import java.util.concurrent.Executors
 /** Private loopback bridge. The native player receives decrypted ranges, never account data. */
 fun main() {
     // 自用场景：把真实设备的播放身份放到 device-identity.txt 就完全不用自动注册。
-    // 先找程序目录，再找 ~/.hgtv/，都没有就用自动注册，不影响正常使用。
-    DeviceIdentityFile.path = java.io.File("device-identity.txt")
+    // 先找程序目录（前端通过 HGTV_APP_ROOT 告诉本进程，即 exe 所在目录），
+    // 再找本进程工作目录（打包布局下是 <程序目录>\bridge）和 ~/.hgtv/，都没有就走自动注册。
+    val appRoot = System.getenv("HGTV_APP_ROOT")?.takeIf { it.isNotBlank() }?.let { java.io.File(it) }
+    DeviceIdentityFile.path = appRoot?.resolve("device-identity.txt")
     DeviceIdentityFile.fallbacks =
-        listOf(java.io.File(System.getProperty("user.home") ?: ".", ".hgtv/device-identity.txt"))
+        listOf(
+            java.io.File("device-identity.txt").absoluteFile,
+            java.io.File(System.getProperty("user.home") ?: ".", ".hgtv/device-identity.txt"),
+        ).distinct()
     // 启动就读一次：前端通过 /identity 查询「有没有读到配置」，不必等到第一次播放。
     DeviceIdentityMonitor.resolve()
     val repository=ContentRepository()
