@@ -343,3 +343,40 @@ adb shell appops set io.github.wuzuo.hgtv MANAGE_EXTERNAL_STORAGE allow
 找剧六张卡分别是「4799万热度 / 2010万热度 / 4054万热度 / 2180万热度 / 4435万热度 / 1368万热度」，
 海报角标仍是「共 12 集」；历史页「看到第 1 集 · 00:23」单行，放大后四条描边闭合；
 排行榜不受影响（「第 1 名」+「共 102 集」+「9667万热度」）。
+
+## 2026-11-04 设备身份配置的读取 / 失效提示
+
+### 背景
+
+配置生效与否原本完全静默：读到了不说，播放中失效也不说，用户只能从「这次要不要多注册一次」的
+间接现象去猜。现在 TV 与 Windows 两端都在两个时刻明确提示一次。
+
+### 事件
+
+`DeviceIdentityMonitor`（core）是唯一状态来源：
+
+| 事件 | 触发点 | 默认文案 |
+| --- | --- | --- |
+| `Loaded` | 启动主动探测，或首次播放时读到合法配置 | 已读取设备身份配置（device_id 尾号 xxxx），播放将跳过注册 |
+| `Rejected` | trusted 身份拿到空响应，`PlaybackDeviceSession.invalidate()` 命中 | 设备身份配置已失效，已自动改为注册设备 |
+
+* 同一份配置只提示一次；换文件或换值才会再次 `Loaded`。
+* `Rejected` 每个进程只报一次，避免每次播放失败都弹。
+* 没有配置不提示——那是正常的自动注册路径，不是错误。
+
+### 平台接入
+
+* **TV**：`MainActivity.onCreate` 先 `addListener`，再 `root.post { DeviceIdentityMonitor.resolve() }`
+  主动探一次；事件内用 `Toast.LENGTH_LONG`。`onDestroy` 摘监听，避免 Activity 泄漏。
+* **Windows**：bridge 启动时 `DeviceIdentityMonitor.resolve()`，新增 `GET /identity` 返回
+  `{configured, deviceId, file, rejected}`；Flutter 启动查一次、之后每 5 秒轮询（失效发生在后台，
+  没有回调可挂），底部状态栏常驻显示，状态变化时用 SnackBar 提示一次。
+
+### 验证
+
+* core：`DeviceIdentityMonitorTest` 5 例——读一次只报一次、无配置不报、失效只报一次、
+  trusted 身份被 `invalidate` 时上报、注册身份被换掉不误报。
+* bridge：`installDist` 后手工起服务，`/identity` 分别返回
+  `{"configured":true,...,"deviceId":"111"}` 与 `{"configured":false,...,"deviceId":null}`，均 200。
+* `:app:testDebugUnitTest`、`:app:lintDebug`、`:app:assembleDebug`、`flutter analyze`、
+  `flutter test` 全通过（core 仅既有的 Windows 原子重命名用例失败，与本次无关）。

@@ -49,7 +49,8 @@
 - 播放中监测音画偏移并自动重同步。
 - 可选：把自己设备上官方客户端的播放身份放进 `device-identity.txt`，即可完全免掉每次播放的设备注册；
   不放也能正常播，只是每播一集要多注册一次。TV 上直接放到 `/sdcard/hgtv/device-identity.txt`，
-  路径与格式见[开发笔记](docs/DEVELOPMENT_NOTES.md)。
+  路径与格式见[开发笔记](docs/DEVELOPMENT_NOTES.md)。读到配置、以及配置在使用中失效，两端都会
+  明确提示一次（TV 为浮层提示，Windows 为底部状态栏 + 提示条），不用再靠现象猜。
 
 ### 界面与弹幕
 

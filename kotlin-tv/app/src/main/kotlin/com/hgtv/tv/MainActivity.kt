@@ -504,6 +504,18 @@ class MainActivity : Activity() {
         return view
     }
 
+    // 本地设备身份配置的提示：启动读到配置、播放中配置失效，各提示一次。
+    private val identityNoticeListener: (DeviceIdentityMonitor.Event) -> Unit = { event ->
+        val message =
+            when (event) {
+                is DeviceIdentityMonitor.Event.Loaded ->
+                    "已读取设备身份配置（device_id 尾号 ${event.identity.deviceId.takeLast(4)}），播放将跳过注册"
+                is DeviceIdentityMonitor.Event.Rejected ->
+                    "设备身份配置已失效，已自动改为注册设备"
+            }
+        runOnUiThread { Toast.makeText(this, message, Toast.LENGTH_LONG).show() }
+    }
+
     // 启动入口：创建根容器，初始化账户、更新和媒体控制，再异步读取本机记录。
     override fun onCreate(state: Bundle?) {
         super.onCreate(state)
@@ -538,6 +550,9 @@ class MainActivity : Activity() {
         tvTools = TvTools(this)
         root = FrameLayout(this).apply { setBackgroundColor(bg) }
         setContentView(root)
+        // 先把提示通道接上，再主动探一次配置：读到就在首屏弹一次提示，读不到保持安静。
+        DeviceIdentityMonitor.addListener(identityNoticeListener)
+        root.post { DeviceIdentityMonitor.resolve() }
         CodecCapabilities.init(this)
         CodecCapabilities.logDeviceCapabilities()
         cloudAccount =
@@ -4721,6 +4736,7 @@ class MainActivity : Activity() {
     // 页面销毁时释放播放器、请求和工作线程，避免资源继续持有旧 Activity。
     override fun onDestroy() {
         generation++
+        DeviceIdentityMonitor.removeListener(identityNoticeListener)
         cancelWork()
         if (networkRegistered) connectivity.unregisterNetworkCallback(networkCallback)
         social.destroy()

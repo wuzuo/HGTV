@@ -35,6 +35,9 @@ keystore.properties
 /downloads/
 /tmp/
 
+# Agent workspace memory
+.workbuddy/
+
 # Delivery artifacts, native intermediates, local runtime
 /outputs/
 .cxx/

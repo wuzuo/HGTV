@@ -18,6 +18,8 @@ fun main() {
     DeviceIdentityFile.path = java.io.File("device-identity.txt")
     DeviceIdentityFile.fallbacks =
         listOf(java.io.File(System.getProperty("user.home") ?: ".", ".hgtv/device-identity.txt"))
+    // 启动就读一次：前端通过 /identity 查询「有没有读到配置」，不必等到第一次播放。
+    DeviceIdentityMonitor.resolve()
     val repository=ContentRepository()
     var feedCursor=DramaFeedState().recommendationCursor
     val catalogLock=Any()
@@ -91,6 +93,18 @@ fun main() {
                 json(exchange,account.handle(exchange,operation.removePrefix("account/"),query));return@createContext
             }
             when(operation) {
+                // 本地设备身份配置的状态：前端据此提示「已读取配置 / 配置已失效」。
+                // 没有配置是正常路径（走自动注册），所以 configured=false 不算错误。
+                "identity" -> {
+                    // 每次查询顺手重新探测：运行中新增/删除配置文件也能在下一轮反映出来。
+                    DeviceIdentityMonitor.resolve()
+                    val loaded=DeviceIdentityMonitor.peek()
+                    json(exchange,JSONObject()
+                        .put("configured",loaded!=null)
+                        .put("deviceId",loaded?.identity?.deviceId ?: JSONObject.NULL)
+                        .put("file",loaded?.file?.absolutePath ?: JSONObject.NULL)
+                        .put("rejected",DeviceIdentityMonitor.wasRejected()))
+                }
                 "comment-page" -> json(exchange,appCommentPages.read(query["series"].orEmpty(),query["episode"].orEmpty(),query["cursor"].orEmpty()))
                 "danmaku" -> json(exchange,timedComments.read(query["series"].orEmpty(),query["episode"].orEmpty(),query["start"]?.toLong() ?: -1,query["duration"]?.toLong() ?: -1))
                 "comments" -> json(exchange,publicComments.read(query["series"].orEmpty(),query["episode"].orEmpty()))

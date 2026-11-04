@@ -69,15 +69,21 @@ object DeviceIdentityFile {
     /** `cdid` 是 UUID，但放宽到字母数字与常见分隔符，避免不同版本格式差异把用户挡在外面。 */
     private val cdidPattern = Regex("[0-9A-Za-z._-]{4,64}")
 
+    /** 读到的身份，以及它是从哪个候选路径读到的（给提示文案用）。 */
+    data class Loaded(val identity: DeviceIdentity, val file: File)
+
     /**
      * 读并校验；任何一步不满足都返回 null，由调用方走自动注册。
      *
      * [file] 为空时依次尝试 [path] 与 [fallbacks]，第一个能解析出完整身份的生效。
      */
-    fun read(file: File? = null): DeviceIdentity? {
-        if (file != null) return parse(file)
+    fun read(file: File? = null): DeviceIdentity? = readDetailed(file)?.identity
+
+    /** 同 [read]，但额外告诉调用方命中的是哪个文件，便于提示用户配置从哪读来的。 */
+    fun readDetailed(file: File? = null): Loaded? {
+        if (file != null) return parse(file)?.let { Loaded(it, file) }
         for (candidate in listOfNotNull(path) + fallbacks) {
-            parse(candidate)?.let { return it }
+            parse(candidate)?.let { return Loaded(it, candidate) }
         }
         return null
     }

@@ -131,6 +131,11 @@ class Api {
 
   Future<AccountInfo> accountStatus() async => AccountInfo.fromJson(await _bridge.get('account/status'));
 
+  /// 本地设备身份配置的状态：`configured` / `deviceId` / `file` / `rejected`。
+  ///
+  /// 没有配置是正常路径（走自动注册），界面据此决定是否提示，不当成错误处理。
+  Future<Map<String, dynamic>> identityStatus() => _bridge.get('identity');
+
   Future<AccountInfo> restoreAccount(String credentials) async =>
       AccountInfo.fromJson(await _bridge.post('account/restore', {'credentials': credentials}));
 

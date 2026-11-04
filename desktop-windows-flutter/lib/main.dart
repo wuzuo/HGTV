@@ -52,6 +52,11 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
   bool _starting = true;
   late String _themeMode = widget.store.themeMode;
 
+  /// 底部状态栏与 SnackBar 共用，保证「设备身份配置」的提示不依赖某个页面的 context。
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  Timer? _identityTimer;
+  String _identityNotice = '';
+
   @override
   void initState() {
     super.initState();
@@ -62,6 +67,7 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
 
   @override
   void dispose() {
+    _identityTimer?.cancel();
     widget.store.removeListener(_onStoreChanged);
     windowManager.removeListener(this);
     super.dispose();
@@ -81,6 +87,9 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
       // The previous process may already be gone.
     }
     _bridge = null;
+    _identityTimer?.cancel();
+    _identityTimer = null;
+    _identityNotice = '';
     setState(() {
       _starting = true;
       _error = null;
@@ -99,6 +108,12 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
       });
       // Account validation hits the network, so the shell comes up first and the chip
       // settles once the stored DPAPI session has been restored.
+      unawaited(_checkIdentity(session));
+      // 身份失效是后台发生的（播放接口拒绝），没有回调可用，靠低频轮询把状态变化顶上来。
+      _identityTimer = Timer.periodic(
+        const Duration(seconds: 5),
+        (_) => _checkIdentity(session),
+      );
       unawaited(_restoreAccount(session));
     } catch (problem) {
       try {
@@ -130,6 +145,52 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
     }
   }
 
+  /// 查询本地设备身份配置状态：更新底部状态栏，并在状态变化时提示一次。
+  ///
+  /// 没有配置是正常路径（自动注册），不提示；读到配置、配置失效各提示一次。
+  Future<void> _checkIdentity(AppSession session) async {
+    Map<String, dynamic> status;
+    try {
+      status = await session.api.identityStatus();
+    } catch (_) {
+      // 桥正在退出或重启，保持原状态，不打扰用户。
+      return;
+    }
+    if (!mounted || _session != session) return;
+
+    final configured = status['configured'] == true;
+    final rejected = status['rejected'] == true;
+    final deviceId = status['deviceId'];
+    final tail = deviceId is String && deviceId.length > 4
+        ? deviceId.substring(deviceId.length - 4)
+        : (deviceId is String ? deviceId : '');
+
+    final notice = rejected
+        ? '设备身份配置已失效，已改为自动注册'
+        : configured
+        ? '已读取设备身份配置（device_id …$tail）'
+        : '';
+    session.setIdentityStatus(notice);
+
+    final previous = _identityNotice;
+    _identityNotice = notice;
+    if (notice.isEmpty || notice == previous) return;
+
+    void show() {
+      _messengerKey.currentState
+        ?..hideCurrentSnackBar()
+        ..showSnackBar(SnackBar(content: Text(notice)));
+    }
+
+    if (_messengerKey.currentState != null) {
+      show();
+    } else {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) show();
+      });
+    }
+  }
+
   @override
   Future<void> onWindowClose() async {
     // Windows flags a window as "not responding" while it is still visible and the video
@@ -156,6 +217,7 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
     return MaterialApp(
       title: AppInfo.name,
       debugShowCheckedModeBanner: false,
+      scaffoldMessengerKey: _messengerKey,
       theme: AppTheme.light,
       darkTheme: AppTheme.dark,
       themeMode: AppTheme.mode(_themeMode),

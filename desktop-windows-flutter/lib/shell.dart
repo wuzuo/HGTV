@@ -135,7 +135,10 @@ class _ShellState extends State<Shell> {
                         _topBar(context),
                         const Divider(height: 1),
                         Expanded(child: _body()),
-                        _statusBar(context),
+                        AnimatedBuilder(
+                          animation: widget.session,
+                          builder: (context, _) => _statusBar(context),
+                        ),
                       ],
                     ),
                   ),
@@ -274,7 +277,10 @@ class _ShellState extends State<Shell> {
           const SizedBox(width: 6),
           Expanded(
             child: Text(
-              widget.session.bridgeStatus.isEmpty ? '本机服务已连接' : widget.session.bridgeStatus,
+              [
+                widget.session.bridgeStatus.isEmpty ? '本机服务已连接' : widget.session.bridgeStatus,
+                if (widget.session.identityStatus.isNotEmpty) widget.session.identityStatus,
+              ].join(' · '),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),

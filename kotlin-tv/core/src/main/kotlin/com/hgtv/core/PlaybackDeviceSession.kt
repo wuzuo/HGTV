@@ -20,7 +20,7 @@ class PlaybackDeviceRegistrationException(cause: Throwable? = null) :
  * 老身份不限次。所以本地身份（[Profile.trusted]）跨播放复用，注册身份则用一次就换。
  */
 class PlaybackDeviceSession(
-    private val localIdentity: () -> DeviceIdentity? = { DeviceIdentityFile.read() },
+    private val localIdentity: () -> DeviceIdentity? = { DeviceIdentityMonitor.resolve() },
     private val register: (OkHttpClient) -> DeviceRegister.Registered? = { http ->
         val body = DeviceRegister.payload(VendorConstants.device)
         val request = Request.Builder().url(DeviceRegister.url())
@@ -69,7 +69,11 @@ class PlaybackDeviceSession(
      */
     @Synchronized
     internal fun invalidate() {
-        if (ready?.trusted == true) localRejected = true
+        if (ready?.trusted == true) {
+            localRejected = true
+            // 只对「本地配置的真实身份」上报：注册身份本来就用一次换一台，不是异常。
+            DeviceIdentityMonitor.reportRejected()
+        }
         ready = null
         cdid = UUID.randomUUID().toString()
     }

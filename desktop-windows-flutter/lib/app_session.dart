@@ -16,6 +16,9 @@ class AppSession extends ChangeNotifier {
   AccountInfo? account;
   String bridgeStatus = '';
 
+  /// 本地设备身份配置的一句话状态（空串表示没有配置，走自动注册）。
+  String identityStatus = '';
+
   bool get loggedIn => account?.loggedIn == true && (account?.id?.isNotEmpty ?? false);
 
   void setAccount(AccountInfo? value) {
@@ -25,6 +28,12 @@ class AppSession extends ChangeNotifier {
 
   void setBridgeStatus(String value) {
     bridgeStatus = value;
+    notifyListeners();
+  }
+
+  void setIdentityStatus(String value) {
+    if (identityStatus == value) return;
+    identityStatus = value;
     notifyListeners();
   }
 
