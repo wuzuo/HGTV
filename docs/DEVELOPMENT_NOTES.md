@@ -455,3 +455,39 @@ bridge 是用 `Process.start(..., workingDirectory: bridgeDir)` 起的，工作�
   （`configured:true`，兼容旧放法）、两处都没有（`configured:false`）、
   程序目录空但 `bridge` 有（回退成功）。
 * `flutter analyze` 无问题，`flutter test` 19 过 1 跳过（跳过的是需要真 bridge 的那条）。
+
+## 2026-11-05 Rokid Station 1080P 花屏与闪退
+
+### 设备情报
+
+Rokid Station 是 Android TV 盒子（Amlogic S905Y4、2GB RAM、1920x1080@240dpi），
+画面经 HDMI/DP 输出到 AR 眼镜。官方适配文档给的是 Android 11，零售机跑 Android TV 12。
+
+### 判断
+
+* 花屏只出现在部分剧的 1080P 上，且会连带进程直接消失 —— 这是解码器/VPU 层的典型表现：
+  原生崩溃不经过 Java，界面留不下错误面板，用户看到的就是「闪退」。
+* 播放链路（选流、解密、DataBuffer）是全局共用的，如果读错数据，所有清晰度都会花，
+  不会只挑 1080P。所以先按「设备端叠加层 + 解码器」处理，不动解密。
+* 应用侧能做的是两件事：换一条画面输出路径，以及把崩溃现场留下来。
+
+### 改法
+
+* `PlaybackCompat`：设置页与播放内的「播放设置」都能切「画面输出」。
+  默认 `SurfaceView`（硬件叠加层，最省电）；兼容档改用 `TextureView`（GPU 合成）。
+  media3 的 `surface_type` 只在 `PlayerView` 构造时读一次、没有 setter，所以兼容档从
+  `res/layout/player_texture_view.xml` inflate 出来。
+* `PlaybackDiagnostics`：进播放前写 `filesDir/playback-active.txt`，正常退出/离开前台时删掉；
+  下次启动如果标记还在，就说明上一次是播放途中没的，补记一条「播放中异常中断」并
+  **自动切到兼容档**（Toast 明说可以改回去）。另外注册兜底的未捕获异常处理器，
+  把 Java 崩溃栈也写进同一份报告。设置页「播放诊断」可查看/复制，不联网。
+* 判定「异常中断」必须只在应用可见时成立，否则后台被系统回收会被误判成闪退，
+  所以 `onStop` 也清标记。
+
+### 验证
+
+* `PlaybackDiagnosticsTest` 6 条：异常中断只补记一次、正常退出不留记录、Java 崩溃入档、
+  报告带设备与输出方式、开关持久化、兼容布局产出的确实是 `TextureView`。
+* 模拟器（hgtv-tv AVD）实跑：设置页多出「画面输出」与「播放诊断」两行，切换后
+  `playback-compat-v1.xml` 落盘 `textureView=true`，诊断弹窗显示设备/输出/记录数。
+* 真机效果无法在本机验证：花屏是否消失、1080P 是否还会崩，只能在 Rokid Station 上实测。

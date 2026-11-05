@@ -700,6 +700,24 @@ class MainActivity : Activity() {
         }
         CodecCapabilities.init(this)
         CodecCapabilities.logDeviceCapabilities()
+        PlaybackCompat.init(this)
+        PlaybackDiagnostics.install(this)
+        // 上一次进程是在播放途中没的（原生解码器崩溃 / 被系统回收）—— 换 TextureView 试试，
+        // 这条路径绕过硬件叠加层，是这类「花屏 + 闪退」最常见的解法。
+        PlaybackDiagnostics.noteStartup(this)?.let { detail ->
+            android.util.Log.w("HGTV", "Previous session ended during playback: $detail")
+            if (!PlaybackCompat.textureSurface()) {
+                PlaybackCompat.setTextureSurface(this, true)
+                root.post {
+                    Toast.makeText(
+                            this,
+                            "上次播放异常中断，已开启画面兼容模式；如果画面变卡可在设置里改回",
+                            Toast.LENGTH_LONG,
+                        )
+                        .show()
+                }
+            }
+        }
         cloudAccount =
             AccountController(this) { remote ->
                 openDetail(remote.series, true, cloudProgress = remote)
@@ -2713,6 +2731,20 @@ class MainActivity : Activity() {
             setting(playback, "画面模式  ·  ${library.frameMode.label}") {
                 showFramePicker(frame, false)
             }
+        lateinit var renderMode: TextView
+        renderMode =
+            setting(playback, "画面输出  ·  ${PlaybackCompat.label()}") {
+                val next = !PlaybackCompat.textureSurface()
+                PlaybackCompat.setTextureSurface(this, next)
+                renderMode.text = "画面输出  ·  ${PlaybackCompat.label()}"
+                Toast.makeText(
+                        this,
+                        if (next) "已切换为兼容输出（TextureView），下次进入播放生效"
+                        else "已恢复默认输出（硬件叠加层），下次进入播放生效",
+                        Toast.LENGTH_LONG,
+                    )
+                    .show()
+            }
         lateinit var autoNextButton: TextView
         autoNextButton =
             setting(playback, "自动连播  ·  ${if(library.autoNext) "开启" else "关闭"}") {
@@ -2728,6 +2760,25 @@ class MainActivity : Activity() {
         heading(device, "应用与更新", "检查新版、查看开源信息")
         // 配置读没读到、为什么没读到，在这里常驻可查：Toast 一闪而过，过后就没法确认了。
         identitySetting = setting(device, identityStatusLabel()) { showIdentityStatus() }
+        lateinit var diagnostics: TextView
+        diagnostics =
+            setting(device, "播放诊断") {
+                showIdentityDialog(
+                    "播放诊断",
+                    PlaybackDiagnostics.report(this),
+                    "复制",
+                ) {
+                    val manager =
+                        getSystemService(Context.CLIPBOARD_SERVICE) as android.content.ClipboardManager
+                    manager.setPrimaryClip(
+                        android.content.ClipData.newPlainText(
+                            "hgtv-playback-diagnostics",
+                            PlaybackDiagnostics.report(this),
+                        )
+                    )
+                    Toast.makeText(this, "诊断信息已复制", Toast.LENGTH_SHORT).show()
+                }
+            }
         lateinit var updates: TextView
         updates = setting(device, "版本与更新  ·  ${BuildConfig.VERSION_NAME}") { updater.show(updates) }
         lateinit var about: TextView
@@ -2774,9 +2825,9 @@ class MainActivity : Activity() {
             }
             if (changed) groups.requestLayout()
         }
-        val left = listOf(qualityButton, defaultSpeed, frame, autoNextButton)
+        val left = listOf(qualityButton, defaultSpeed, frame, renderMode, autoNextButton)
         val middle = listOf(themeButton, account)
-        val right = listOf(updates, about, license)
+        val right = listOf(updates, diagnostics, about, license)
         val columns = listOf(left, middle, right)
         columns.forEach { items ->
             items.forEachIndexed { index, view ->
@@ -3413,7 +3464,7 @@ class MainActivity : Activity() {
             root.removeAllViews()
             root.setBackgroundColor(Color.BLACK)
             val view =
-                PlayerView(this).apply {
+                createPlayerView().apply {
                     useController = false
                     resizeMode = frameResizeMode()
                     isFocusable = false
@@ -3703,6 +3754,13 @@ class MainActivity : Activity() {
                 val source = episodeSource(remote, requestedId)
                 p.setMediaSource(source)
                 p.seekTo(position.coerceAtLeast(0))
+                PlaybackDiagnostics.beginPlayback(
+                    this,
+                    "ep=${episodeIndex + 1} ${opened.rendition?.quality ?: 0}P " +
+                        "codec=${opened.rendition?.codec ?: opened.track?.fourcc ?: "?"} " +
+                        "size=${opened.track?.width}x${opened.track?.height} " +
+                        "render=${PlaybackCompat.label()}",
+                )
                 p.prepare()
                 p.playWhenReady =
                     foreground && requestedAutoplay && !pausedForLifecycle && episodePanel == null
@@ -4306,6 +4364,15 @@ class MainActivity : Activity() {
         )
     }
 
+    /**
+     * 兼容模式从布局里拿 `surface_type="texture_view"` 的 PlayerView（media3 只在构造时读这个属性，
+     * 没有 setter），默认仍然用 SurfaceView。
+     */
+    private fun createPlayerView(): PlayerView =
+        if (PlaybackCompat.textureSurface())
+            layoutInflater.inflate(R.layout.player_texture_view, root, false) as PlayerView
+        else PlayerView(this)
+
     private fun frameResizeMode() =
         when (library.frameMode) {
             VideoFrameMode.FIT -> androidx.media3.ui.AspectRatioFrameLayout.RESIZE_MODE_FIT
@@ -4390,9 +4457,11 @@ class MainActivity : Activity() {
                             "倍速 ${PlaybackSpeed.label(library.playbackSpeed)}",
                             "清晰度 ${library.maxQuality}P",
                             "画面 ${library.frameMode.label}",
+                            "输出 ${PlaybackCompat.label()}",
                             "定时 ${sleepTimer.label()}",
                             "从头播放",
                             "重置设备能力记录",
+                            "播放诊断",
                         ),
                         more,
                         { choice ->
@@ -4402,12 +4471,20 @@ class MainActivity : Activity() {
                                         0 -> showSpeedPicker(more)
                                         1 -> showQualityPicker(more, true)
                                         2 -> showFramePicker(more, true)
-                                        3 -> showSleepPicker(more)
-                                        4 -> {
+                                        3 -> {
+                                            PlaybackCompat.setTextureSurface(
+                                                this,
+                                                !PlaybackCompat.textureSurface(),
+                                            )
+                                            playbackText.text =
+                                                "画面输出已改为 ${PlaybackCompat.label()}，下一集或重新进入播放生效"
+                                        }
+                                        4 -> showSleepPicker(more)
+                                        5 -> {
                                             seekTo(0)
                                             hidePanel()
                                         }
-                                        5 -> {
+                                        6 -> {
                                             val count = CodecCapabilities.learnedCount()
                                             CodecCapabilities.resetLearned()
                                             android.util.Log.i(
@@ -4418,6 +4495,28 @@ class MainActivity : Activity() {
                                                 if (count > 0) "已清除 $count 条设备能力记录，重新按解码器实际能力选流"
                                                 else "暂无设备能力记录"
                                         }
+                                        7 ->
+                                            showIdentityDialog(
+                                                "播放诊断",
+                                                PlaybackDiagnostics.report(this),
+                                                "复制",
+                                            ) {
+                                                val manager =
+                                                    getSystemService(Context.CLIPBOARD_SERVICE)
+                                                        as android.content.ClipboardManager
+                                                manager.setPrimaryClip(
+                                                    android.content.ClipData.newPlainText(
+                                                        "hgtv-playback-diagnostics",
+                                                        PlaybackDiagnostics.report(this),
+                                                    )
+                                                )
+                                                Toast.makeText(
+                                                        this,
+                                                        "诊断信息已复制",
+                                                        Toast.LENGTH_SHORT,
+                                                    )
+                                                    .show()
+                                            }
                                     }
                             }
                         },
@@ -4607,6 +4706,7 @@ class MainActivity : Activity() {
     }
 
     private fun releasePlayer(keepPrepared: Boolean = false) {
+        PlaybackDiagnostics.endPlayback(this)
         social.reset()
         cancelRecovery()
         cancelPrefetchState(keepPrepared)
@@ -4862,6 +4962,8 @@ class MainActivity : Activity() {
 
     // 应用离开前台时暂停播放及后台活动，防止页面不可见时继续消耗资源。
     override fun onStop() {
+        // 用户离开前台后播放已暂停：把「播放中」标记收掉，这样后台被系统回收不会被误判成闪退。
+        PlaybackDiagnostics.endPlayback(this)
         homeFeed?.close()
         homeFeed = null
         restoreStoppedPage = true
