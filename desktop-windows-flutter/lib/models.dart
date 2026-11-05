@@ -213,12 +213,18 @@ class WatchRecord {
   final bool completed;
   final int updatedAt;
 
-  String get label {
-    final seconds = position < 0 ? 0 : position.toInt();
-    final clock =
-        '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
-    return '第 ${episodeIndex + 1} 集 · ${completed ? '已看完' : clock}';
+  /// 播放位置（mm:ss）。位置异常时按 0 处理，避免界面出现负时间。
+  String get clock {
+    final seconds = position.isFinite && position > 0 ? position.toInt() : 0;
+    return '${(seconds ~/ 60).toString().padLeft(2, '0')}:${(seconds % 60).toString().padLeft(2, '0')}';
   }
+
+  String get label => '第 ${episodeIndex + 1} 集 · ${completed ? '已看完' : clock}';
+
+  /// 首页「继续观看」里的说法：整集看完时不写 00:00，直接指向下一集。
+  String get resumeWhere => completed ? '接着看下一集' : '第 ${episodeIndex + 1} 集 · $clock';
+
+  double get progress => duration > 0 ? (position / duration).clamp(0.0, 1.0) : 0.0;
 
   Map<String, dynamic> toJson() => {
     'series': series.toJson(),
@@ -242,6 +248,19 @@ class WatchRecord {
 }
 
 // ---- JSON helpers -------------------------------------------------------------------------
+
+/// 本机历史里最近的一条，供首页「继续观看」使用。
+///
+/// [LocalStore] 写入时把新记录插到头部，但旧文件或手工改过的顺序不一定可靠，
+/// 所以这里按 `updatedAt` 取最大值；全部为 0 的旧数据退化成第一条。
+WatchRecord? latestHistory(List<WatchRecord> history) {
+  if (history.isEmpty) return null;
+  var latest = history.first;
+  for (final record in history) {
+    if (record.updatedAt > latest.updatedAt) latest = record;
+  }
+  return latest;
+}
 
 List<Map<String, dynamic>> _objects(dynamic value) {
   if (value is! List) return const [];

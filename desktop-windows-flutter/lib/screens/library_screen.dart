@@ -37,7 +37,7 @@ class LibraryScreen extends StatelessWidget {
                       ),
                     ),
                     Text(
-                      '收藏 ${store.favorites.length} · 记录 ${store.history.length}',
+                      '记录 ${store.history.length} · 收藏 ${store.favorites.length}',
                       style: TextStyle(
                         fontSize: 12,
                         color: Theme.of(context).colorScheme.onSurfaceVariant,
@@ -49,7 +49,7 @@ class LibraryScreen extends StatelessWidget {
               const TabBar(
                 isScrollable: true,
                 tabAlignment: TabAlignment.start,
-                tabs: [Tab(text: '本机收藏'), Tab(text: '观看记录')],
+                tabs: [Tab(text: '观看记录'), Tab(text: '本机收藏')],
               ),
               if (store.loadError != null)
                 Padding(
@@ -57,7 +57,7 @@ class LibraryScreen extends StatelessWidget {
                   child: ErrorBanner(message: store.loadError!),
                 ),
               Expanded(
-                child: TabBarView(children: [_favorites(), _history()]),
+                child: TabBarView(children: [_history(), _favorites()]),
               ),
             ],
           );
@@ -170,7 +170,7 @@ class _HistoryRow extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final progress = record.duration > 0 ? (record.position / record.duration).clamp(0.0, 1.0) : 0.0;
+    final progress = record.progress;
     return InkWell(
       onTap: onOpen,
       borderRadius: BorderRadius.circular(14),

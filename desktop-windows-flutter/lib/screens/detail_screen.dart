@@ -14,10 +14,15 @@ class DetailScreen extends StatefulWidget {
     super.key,
     required this.session,
     required this.series,
+    this.autoplay = false,
   });
 
   final AppSession session;
   final Series series;
+
+  /// 首页「继续观看」用：详情一加载完就直接进播放器，跳过再点一次。
+  /// 只生效一次，从播放器返回后停在详情页。
+  final bool autoplay;
 
   @override
   State<DetailScreen> createState() => _DetailScreenState();
@@ -31,6 +36,7 @@ class _DetailScreenState extends State<DetailScreen> {
   bool _loading = true;
   bool _descriptionExpanded = false;
   int? _playingIndex;
+  bool _autoplayHandled = false;
 
   @override
   void initState() {
@@ -53,6 +59,12 @@ class _DetailScreenState extends State<DetailScreen> {
         _playingIndex = _resumeIndex(detail);
       });
       unawaited(_loadRelated());
+      if (widget.autoplay && !_autoplayHandled) {
+        _autoplayHandled = true;
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) unawaited(_openPlayer(_resumeIndex(detail)));
+        });
+      }
     } catch (problem) {
       if (!mounted) return;
       setState(() {
@@ -138,7 +150,24 @@ class _DetailScreenState extends State<DetailScreen> {
           child: ConstrainedBox(
             constraints: const BoxConstraints(maxWidth: 1200),
             child: _loading
-                ? const Center(child: CircularProgressIndicator())
+                ? Center(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const CircularProgressIndicator(),
+                        if (widget.autoplay) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            '正在打开上次看到的位置…',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: Theme.of(context).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  )
                 : _error != null
                 ? StatusPanel(
                     icon: Icons.cloud_off,

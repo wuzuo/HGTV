@@ -591,3 +591,31 @@ true)` 会顺延到下一集；离开前先 `remember()` 并暂停试播，与�
 原子重命名失败。
 
 未验证：真机 720P 下右栏高度是否够、遥控器焦点手感。本机只能验证视图状态与文案。
+
+## Windows 首页「继续观看」与本机页顺序（2026-11-05）
+
+TV 端首页顶部那条「继续观看」在 Windows 侧同步了一份。Windows 没有遥控器焦点概念，做法更直接：
+首页标题行下方一条卡片，封面 + 剧名 + 「第 N 集 · mm:ss」+ 进度条，右侧一个「继续观看」按钮，
+点卡片或按钮都直达播放器。
+
+- 数据来源是 `LocalStore.history`，全部在本地 `library.json`，所以推荐流加载中、加载失败都照样
+  能用——这块放在推荐列表的 `Expanded` 之外，不参与 `_loading` 分支。
+- 取哪一条由 `latestHistory()`（`models.dart`）决定：按 `updatedAt` 取最大值，而不是直接用
+  `history.first`。写入路径确实是插到头部，但旧文件、手工改过的顺序、跨客户端同步来的
+  `library.json` 都不保证，按时间取更稳；`updatedAt` 全为 0 的旧数据退化成第一条。
+- 文案由 `WatchRecord.resumeWhere` 给出：未看完是「第 N 集 · mm:ss」，整集看完改成
+  「接着看下一集」，不写 00:00。集号统一从 1 开始。`clock` / `progress` 一并抽成 getter，
+  `library_screen` 的进度条改用 `record.progress`，负位置按 0 处理。
+- 点进去之后不再让用户点第二次：`DetailScreen` 新增 `autoplay`，详情一加载完就
+  `_openPlayer(_resumeIndex(detail))`。`_resumeIndex` 复用详情页原有逻辑——找到上次那一集，
+  已看完顺延下一集，找不到就第 1 集。用 `_autoplayHandled` 只放行一次，从播放器返回后停在详情页；
+  加载期间文案是「正在打开上次看到的位置…」，不是空白转圈。
+- 本机页（侧边栏「本机」）Tab 顺序按使用频率调换：**观看记录在前、本机收藏在后**，
+  两栏的计数也改成「记录 N · 收藏 M」，与 Tab 顺序对应。
+
+回归：新增 `test/resume_test.dart` 6 条（按更新时间取最近、已看完指向下一集、空历史返回 null、
+旧数据无时间戳退回第一条、进度夹在 0..1、负位置不出负时间）。`flutter analyze` 无问题，
+`flutter test` 25 项通过（`live_bridge_test` 需要环境变量，照常跳过）。
+
+未验证：真机点一下到出画面的实际衔接（详情加载 + 取流两段网络）、卡片在窄窗口下的排布。
+本机只能验证数据选取与文案。

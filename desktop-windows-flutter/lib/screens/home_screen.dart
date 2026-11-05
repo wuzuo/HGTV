@@ -84,6 +84,19 @@ class _HomeScreenState extends State<HomeScreen> {
     unawaited(_load());
   }
 
+  /// 首页的「继续观看」：直接进播放器，不再让用户去详情页点一次。
+  void _openResume(WatchRecord record) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(
+        builder: (_) => DetailScreen(
+          session: widget.session,
+          series: record.series,
+          autoplay: true,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
@@ -107,6 +120,14 @@ class _HomeScreenState extends State<HomeScreen> {
               ),
             ],
           ),
+        ),
+        AnimatedBuilder(
+          animation: widget.session.store,
+          builder: (context, _) {
+            final latest = latestHistory(widget.session.store.history);
+            if (latest == null) return const SizedBox.shrink();
+            return _ResumeCard(record: latest, onOpen: () => _openResume(latest));
+          },
         ),
         Padding(
           padding: const EdgeInsets.fromLTRB(20, 4, 20, 0),
@@ -168,6 +189,81 @@ class _HomeScreenState extends State<HomeScreen> {
                 ),
         ),
       ],
+    );
+  }
+}
+
+/// 首页顶部「继续观看」：本机最近一条记录，点一下直接续播。
+///
+/// 数据全部来自本地 `library.json`，不依赖推荐流是否加载成功，所以推荐失败或加载中
+/// 也照样能接着看。
+class _ResumeCard extends StatelessWidget {
+  const _ResumeCard({required this.record, required this.onOpen});
+
+  final WatchRecord record;
+  final VoidCallback onOpen;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 0),
+      child: Material(
+        color: scheme.surfaceContainerLow,
+        borderRadius: BorderRadius.circular(14),
+        child: InkWell(
+          onTap: onOpen,
+          borderRadius: BorderRadius.circular(14),
+          child: Padding(
+            padding: const EdgeInsets.all(10),
+            child: Row(
+              children: [
+                SizedBox(width: 42, child: DramaCover(series: record.series, radius: 8)),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        '继续观看',
+                        style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        record.series.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(height: 3),
+                      Text(
+                        record.resumeWhere,
+                        style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+                      ),
+                      const SizedBox(height: 6),
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(2),
+                        child: LinearProgressIndicator(
+                          value: record.progress,
+                          minHeight: 3,
+                          backgroundColor: scheme.surfaceContainerHighest,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                FilledButton.tonalIcon(
+                  onPressed: onOpen,
+                  icon: const Icon(Icons.play_arrow, size: 18),
+                  label: const Text('继续观看'),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
