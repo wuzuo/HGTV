@@ -1,0 +1,177 @@
+##UID 0
+##SDK 35
+##PM-BEGIN
+com.phoenix.read
+##PM-END
+##FILE /data/data/com.google.android.gms/shared_prefs/constellation_prefs.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <long name="last_consent_checked_timestamp_for_trigger_millis" value="1793757974796" />
+    <long name="primary_device_id" value="0" />
+</map>
+##FILE /data/data/com.google.android.gms/shared_prefs/nearbysharing:service:state.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="device_id">ABCD1234EF</string>
+    <boolean name="auto_enable_bluetooth" value="false" />
+    <boolean name="auto_enable_wifi" value="false" />
+</map>
+##FILE /data/data/com.mumu.store/shared_prefs/com.mumu.store.prefs.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="startup_last_device_launch">1793761527</string>
+    <string name="host_device_id">aeawuzxrbuahnx4j</string>
+    <string name="ad_removal_config">{&quot;modules&quot;:[{&quot;module&quot;:&quot;launcher_launching_campaign&quot;,&quot;exclude_fchannels&quot;:[]},{&quot;module&quot;:&quot;launcher_popup&quot;,&quot;exclude_fchannels&quot;:[]}]}</string>
+    <string name="popup_ad_record">{&quot;ad_id&quot;:&quot;X9TOnE&quot;,&quot;ad_last_time&quot;:1793760765783,&quot;ad_show_times&quot;:1}</string>
+</map>
+##FILE /data/data/com.phoenix.read/shared_prefs/WebViewBytedancePrefs.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="usedDecompressSuccessfulMd5"></string>
+    <long name="effect_begin_time_1501130075420" value="1793762050718" />
+    <int name="start_time_by_version" value="2" />
+    <string name="last_settings_sdk_version">1140022006</string>
+    <string name="isAppFirstInstall">72932</string>
+    <string name="config_url">https://settings.ttwebview.com/service/settings/v2/?app=1&amp;caller_name=tt_webview&amp;sdk_version_code=0621140022&amp;sdk_upto_so_versioncode=0620010001&amp;sdk_load_so_versioncode=0620010001&amp;os_type=android&amp;os_api=35&amp;target_api=35&amp;host_abi=64&amp;settings_time=1793762050&amp;device_platform=SM-A528B&amp;device_manufacturer=Samsung&amp;os_version=15&amp;package_name=com.phoenix.read&amp;deviceid=1782760663187289&amp;device_id=1782760663187289&amp;channel=xiaomi_8662_64&amp;aid=8662&amp;app_version_code=72932&amp;update_version_code=72932&amp;sdk_scc_version=25&amp;kernel_scc_version=-2&amp;request_time=1793762107263</string>
+    <long name="setting_request_time" value="1793762107263" />
+    <string name="prepareError">{&quot;1501130075420&quot;:&quot;ABI is not supported.&quot;}</string>
+    <string name="load_eventlist"></string>
+    <int name="useStatus" value="100" />
+    <int name="start_time" value="2" />
+    <long name="last_update_time" value="1793762108801" />
+    <string name="usedSupportHostAbi">Any</string>
+    <string name="usedUptoSoVersioncode">0620010001</string>
+    <set name="downloadUrls">
+        <string>clearUrl</string>
+    </set>
+    <int name="enable_ttwebview_status" value="1" />
+    <string name="prevSo">0620010001</string>
+    <long name="webview_last_used_time" value="1793762050718" />
+</map>
+##FILE /data/data/com.phoenix.read/shared_prefs/applog_stats.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <long name="session_interval" value="30000" />
+    <int name="content_encode_method" value="0" />
+    <long name="last_config_time" value="1793761995698" />
+    <string name="device_id">1782760663187289</string>
+    <long name="batch_event_interval" value="20000" />
+    <string name="key_task_session"></string>
+    <long name="latest_forground_session_time" value="1793762101990" />
+    <long name="app_log_last_config_time" value="1793761996964" />
+    <long name="fetch_interval" value="21600000" />
+    <int name="http_monitor_port" value="1024" />
+    <string name="install_id">1782760662372201</string>
+    <int name="last_config_version" value="72932" />
+    <int name="is_first_req_after_install" value="0" />
+    <string name="dr_channel">xiaomi_8662_64</string>
+    <string name="device_token">AAAUO5IAQMGMLLLMK44V6RHKW3EIQTC6B6L7WX3F3AFK37YE2MZNF24I27E55TQD4H5QCG2KUEU24ARJZK5YYPZULKXSFL5KX65KV64FDPPWQRYLJZP5PVCEIAGFO</string>
+    <int name="send_launch_timely" value="1" />
+    <string name="klink_egdi">AAJZPsMOwcOUe9T7IGH9wN0OS5wPZHpe9nsLJBUjma3zeWBHulT-eTDt</string>
+    <string name="real_time_events">[&quot;realtime_click&quot;,&quot;realtime_report&quot;,&quot;tobsdk_livesdk_click_ecom_card&quot;,&quot;tobsdk_livesdk_order_submit_success&quot;,&quot;tobsdk_livesdk_click_product&quot;,&quot;tobsdk_livesdk_commodity_duration&quot;,&quot;tobsdk_livesdk_click_add_to_cart&quot;,&quot;tobsdk_livesdk_product_entrance_click&quot;,&quot;tobsdk_livesdk_follow&quot;,&quot;tobsdk_livesdk_order_submit&quot;,&quot;enter_category&quot;,&quot;community_page_init&quot;,&quot;read_profile_enter&quot;,&quot;enter_undertake_landing_page&quot;]</string>
+    <string name="stats_value">{&quot;session_id&quot;:&quot;53f8d403-260f-4e73-83bb-84bfc1f5d7f0#1&quot;,&quot;cnt_success&quot;:0,&quot;cnt_failure&quot;:0}</string>
+    <int name="app_log_last_config_version" value="72932" />
+</map>
+##FILE /data/data/com.phoenix.read/shared_prefs/byte_sync_settings.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="device_id">1782760663187289</string>
+    <string name="bd_sync_sdk_prev_version">wi1.a</string>
+</map>
+##FILE /data/data/com.phoenix.read/shared_prefs/com.ss.android.deviceregister.utils.Cdid.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="cdid">e7b40284-6c74-438f-87d5-b0d7bebfb813</string>
+</map>
+##FILE /data/data/com.phoenix.read/shared_prefs/depths_sp_local.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="http_common_params">{&quot;country&quot;:&quot;CN&quot;,&quot;push_sdk_version&quot;:&quot;30931&quot;,&quot;iid&quot;:&quot;1782760662372201&quot;,&quot;channel&quot;:&quot;xiaomi_8662_64&quot;,&quot;device_type&quot;:&quot;SM-A528B&quot;,&quot;language&quot;:&quot;zh&quot;,&quot;os_detail_type&quot;:&quot;android&quot;,&quot;device_manufacturer&quot;:&quot;Samsung&quot;,&quot;update_version_code&quot;:&quot;72932&quot;,&quot;rom&quot;:&quot;248&quot;,&quot;os_api&quot;:&quot;35&quot;,&quot;tz_name&quot;:&quot;Asia\/Shanghai&quot;,&quot;push_sdk_version_name&quot;:&quot;3.9.31.7-bugfix&quot;,&quot;tz_offset&quot;:&quot;28800&quot;,&quot;dpi&quot;:&quot;240&quot;,&quot;push_device_id&quot;:&quot;b9ffe1b8e180fd7d8ebdb9a70794570c1091769efa9b78431838e4779fcd5682&quot;,&quot;ac&quot;:&quot;wifi&quot;,&quot;process&quot;:&quot;main&quot;,&quot;package&quot;:&quot;com.phoenix.read&quot;,&quot;device_id&quot;:&quot;1782760663187289&quot;,&quot;os&quot;:&quot;android&quot;,&quot;os_version&quot;:&quot;15&quot;,&quot;version_code&quot;:&quot;72932&quot;,&quot;app_name&quot;:&quot;novelread&quot;,&quot;version_name&quot;:&quot;7.2.9.32&quot;,&quot;device_brand&quot;:&quot;Samsung&quot;,&quot;region&quot;:&quot;cn&quot;,&quot;aid&quot;:&quot;8662&quot;,&quot;rom_version&quot;:&quot;35&quot;}</string>
+    <string name="awareness_config"></string>
+</map>
+##FILE /data/user/0/com.google.android.gms/shared_prefs/constellation_prefs.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <long name="last_consent_checked_timestamp_for_trigger_millis" value="1793757974796" />
+    <long name="primary_device_id" value="0" />
+</map>
+##FILE /data/user/0/com.google.android.gms/shared_prefs/nearbysharing:service:state.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="device_id">ABCD1234EF</string>
+    <boolean name="auto_enable_bluetooth" value="false" />
+    <boolean name="auto_enable_wifi" value="false" />
+</map>
+##FILE /data/user/0/com.mumu.store/shared_prefs/com.mumu.store.prefs.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="startup_last_device_launch">1793761527</string>
+    <string name="host_device_id">aeawuzxrbuahnx4j</string>
+    <string name="ad_removal_config">{&quot;modules&quot;:[{&quot;module&quot;:&quot;launcher_launching_campaign&quot;,&quot;exclude_fchannels&quot;:[]},{&quot;module&quot;:&quot;launcher_popup&quot;,&quot;exclude_fchannels&quot;:[]}]}</string>
+    <string name="popup_ad_record">{&quot;ad_id&quot;:&quot;X9TOnE&quot;,&quot;ad_last_time&quot;:1793760765783,&quot;ad_show_times&quot;:1}</string>
+</map>
+##FILE /data/user/0/com.phoenix.read/shared_prefs/WebViewBytedancePrefs.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="usedDecompressSuccessfulMd5"></string>
+    <long name="effect_begin_time_1501130075420" value="1793762050718" />
+    <int name="start_time_by_version" value="2" />
+    <string name="last_settings_sdk_version">1140022006</string>
+    <string name="isAppFirstInstall">72932</string>
+    <string name="config_url">https://settings.ttwebview.com/service/settings/v2/?app=1&amp;caller_name=tt_webview&amp;sdk_version_code=0621140022&amp;sdk_upto_so_versioncode=0620010001&amp;sdk_load_so_versioncode=0620010001&amp;os_type=android&amp;os_api=35&amp;target_api=35&amp;host_abi=64&amp;settings_time=1793762050&amp;device_platform=SM-A528B&amp;device_manufacturer=Samsung&amp;os_version=15&amp;package_name=com.phoenix.read&amp;deviceid=1782760663187289&amp;device_id=1782760663187289&amp;channel=xiaomi_8662_64&amp;aid=8662&amp;app_version_code=72932&amp;update_version_code=72932&amp;sdk_scc_version=25&amp;kernel_scc_version=-2&amp;request_time=1793762107263</string>
+    <long name="setting_request_time" value="1793762107263" />
+    <string name="prepareError">{&quot;1501130075420&quot;:&quot;ABI is not supported.&quot;}</string>
+    <string name="load_eventlist"></string>
+    <int name="useStatus" value="100" />
+    <int name="start_time" value="2" />
+    <long name="last_update_time" value="1793762108801" />
+    <string name="usedSupportHostAbi">Any</string>
+    <string name="usedUptoSoVersioncode">0620010001</string>
+    <set name="downloadUrls">
+        <string>clearUrl</string>
+    </set>
+    <int name="enable_ttwebview_status" value="1" />
+    <string name="prevSo">0620010001</string>
+    <long name="webview_last_used_time" value="1793762050718" />
+</map>
+##FILE /data/user/0/com.phoenix.read/shared_prefs/applog_stats.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <long name="session_interval" value="30000" />
+    <int name="content_encode_method" value="0" />
+    <long name="last_config_time" value="1793761995698" />
+    <string name="device_id">1782760663187289</string>
+    <long name="batch_event_interval" value="20000" />
+    <string name="key_task_session"></string>
+    <long name="latest_forground_session_time" value="1793762101990" />
+    <long name="app_log_last_config_time" value="1793761996964" />
+    <long name="fetch_interval" value="21600000" />
+    <int name="http_monitor_port" value="1024" />
+    <string name="install_id">1782760662372201</string>
+    <int name="last_config_version" value="72932" />
+    <int name="is_first_req_after_install" value="0" />
+    <string name="dr_channel">xiaomi_8662_64</string>
+    <string name="device_token">AAAUO5IAQMGMLLLMK44V6RHKW3EIQTC6B6L7WX3F3AFK37YE2MZNF24I27E55TQD4H5QCG2KUEU24ARJZK5YYPZULKXSFL5KX65KV64FDPPWQRYLJZP5PVCEIAGFO</string>
+    <int name="send_launch_timely" value="1" />
+    <string name="klink_egdi">AAJZPsMOwcOUe9T7IGH9wN0OS5wPZHpe9nsLJBUjma3zeWBHulT-eTDt</string>
+    <string name="real_time_events">[&quot;realtime_click&quot;,&quot;realtime_report&quot;,&quot;tobsdk_livesdk_click_ecom_card&quot;,&quot;tobsdk_livesdk_order_submit_success&quot;,&quot;tobsdk_livesdk_click_product&quot;,&quot;tobsdk_livesdk_commodity_duration&quot;,&quot;tobsdk_livesdk_click_add_to_cart&quot;,&quot;tobsdk_livesdk_product_entrance_click&quot;,&quot;tobsdk_livesdk_follow&quot;,&quot;tobsdk_livesdk_order_submit&quot;,&quot;enter_category&quot;,&quot;community_page_init&quot;,&quot;read_profile_enter&quot;,&quot;enter_undertake_landing_page&quot;]</string>
+    <string name="stats_value">{&quot;session_id&quot;:&quot;53f8d403-260f-4e73-83bb-84bfc1f5d7f0#1&quot;,&quot;cnt_success&quot;:0,&quot;cnt_failure&quot;:0}</string>
+    <int name="app_log_last_config_version" value="72932" />
+</map>
+##FILE /data/user/0/com.phoenix.read/shared_prefs/byte_sync_settings.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="device_id">1782760663187289</string>
+    <string name="bd_sync_sdk_prev_version">wi1.a</string>
+</map>
+##FILE /data/user/0/com.phoenix.read/shared_prefs/com.ss.android.deviceregister.utils.Cdid.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="cdid">e7b40284-6c74-438f-87d5-b0d7bebfb813</string>
+</map>
+##FILE /data/user/0/com.phoenix.read/shared_prefs/depths_sp_local.xml
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="http_common_params">{&quot;country&quot;:&quot;CN&quot;,&quot;push_sdk_version&quot;:&quot;30931&quot;,&quot;iid&quot;:&quot;1782760662372201&quot;,&quot;channel&quot;:&quot;xiaomi_8662_64&quot;,&quot;device_type&quot;:&quot;SM-A528B&quot;,&quot;language&quot;:&quot;zh&quot;,&quot;os_detail_type&quot;:&quot;android&quot;,&quot;device_manufacturer&quot;:&quot;Samsung&quot;,&quot;update_version_code&quot;:&quot;72932&quot;,&quot;rom&quot;:&quot;248&quot;,&quot;os_api&quot;:&quot;35&quot;,&quot;tz_name&quot;:&quot;Asia\/Shanghai&quot;,&quot;push_sdk_version_name&quot;:&quot;3.9.31.7-bugfix&quot;,&quot;tz_offset&quot;:&quot;28800&quot;,&quot;dpi&quot;:&quot;240&quot;,&quot;push_device_id&quot;:&quot;b9ffe1b8e180fd7d8ebdb9a70794570c1091769efa9b78431838e4779fcd5682&quot;,&quot;ac&quot;:&quot;wifi&quot;,&quot;process&quot;:&quot;main&quot;,&quot;package&quot;:&quot;com.phoenix.read&quot;,&quot;device_id&quot;:&quot;1782760663187289&quot;,&quot;os&quot;:&quot;android&quot;,&quot;os_version&quot;:&quot;15&quot;,&quot;version_code&quot;:&quot;72932&quot;,&quot;app_name&quot;:&quot;novelread&quot;,&quot;version_name&quot;:&quot;7.2.9.32&quot;,&quot;device_brand&quot;:&quot;Samsung&quot;,&quot;region&quot;:&quot;cn&quot;,&quot;aid&quot;:&quot;8662&quot;,&quot;rom_version&quot;:&quot;35&quot;}</string>
+    <string name="awareness_config"></string>
+</map>

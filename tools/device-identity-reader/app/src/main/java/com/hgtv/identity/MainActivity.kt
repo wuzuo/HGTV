@@ -18,6 +18,7 @@ import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 import java.util.concurrent.Executors
 
 /**
@@ -39,14 +40,18 @@ class MainActivity : Activity() {
     private lateinit var idInstall: TextView
     private lateinit var idCdid: TextView
     private lateinit var blockView: TextView
+    private lateinit var diagView: TextView
     private lateinit var reloadButton: Button
     private lateinit var copyBlockButton: Button
     private lateinit var shareButton: Button
     private lateinit var saveButton: Button
     private lateinit var writeButton: Button
+    private lateinit var diagButton: Button
 
     private var identity: IdentityParser.Identity? = null
     private var sourcePackage: String? = null
+    private var rawDump: String = ""
+    private var dumpFile: java.io.File? = null
     private var loading = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -95,7 +100,7 @@ class MainActivity : Activity() {
         )
         root.addView(
             label(
-                "需要 root（Magisk 授权）。只读取本机红果的私有数据，不联网、不上传。",
+                "需要 root（Magisk / KernelSU 授权），不需要存储权限。只读取本机红果的私有数据，不联网、不上传。",
                 13f,
                 color = Color.parseColor("#B3261E"),
             ).apply { setPadding(0, dp(2), 0, dp(14)) },
@@ -139,12 +144,23 @@ class MainActivity : Activity() {
         shareButton = actionButton("分享文字").apply { setOnClickListener { shareText() } }
         saveButton = actionButton("另存为文件…").apply { setOnClickListener { saveFile() } }
         writeButton = actionButton("写入本机 /sdcard/hgtv/").apply { setOnClickListener { writeToSdcard() } }
+        diagButton = actionButton("查看诊断信息").apply { setOnClickListener { toggleDiag() } }
 
         root.addView(copyBlockButton, buttonParams())
         root.addView(shareButton, buttonParams())
         root.addView(saveButton, buttonParams())
         root.addView(writeButton, buttonParams())
         root.addView(reloadButton, buttonParams())
+        root.addView(diagButton, buttonParams())
+
+        diagView = label("", 11f, color = Color.parseColor("#3C4043")).apply {
+            typeface = Typeface.MONOSPACE
+            setTextIsSelectable(true)
+            setPadding(dp(12), dp(12), dp(12), dp(12))
+            setBackgroundColor(Color.parseColor("#F1F3F4"))
+            visibility = TextView.GONE
+        }
+        root.addView(diagView, buttonParams())
 
         setActionsEnabled(false)
 
@@ -227,44 +243,106 @@ class MainActivity : Activity() {
 
     // ---------------------------------------------------------------- 读取
 
+    /**
+     * 不写死包名：把本机所有 shared_prefs 里出现 `cdid` / `device_id` 的都抓回来，交给
+     * [IdentityParser] 排序挑选，包名从文件路径反推。
+     *
+     * 这样即使红果换了包名、装在应用分身（其它 user）里、或者设备身份存在
+     * `/data/user_de/0/...`，也都能读到。
+     *
+     * 每个文件只取命中的那一行，避免把几百 KB 的 ttnet 配置整个读回来。
+     */
     private val dumpScript: String =
         """
         echo "##UID ${dollar}(id -u)"
-        for p in com.phoenix.read com.phoenix.read.lite; do
-          if [ -d "/data/data/${dollar}p" ]; then
-            echo "##PKG ${dollar}p"
-            for base in "/data/data/${dollar}p" "/data/user_de/0/${dollar}p"; do
-              for f in "${dollar}base"/shared_prefs/*.xml; do
-                [ -f "${dollar}f" ] || continue
-                echo "##FILE ${dollar}f"
-                cat "${dollar}f"
-              done
-            done
-            break
-          fi
+        echo "##SDK ${dollar}(getprop ro.build.version.sdk)"
+        echo "##PM-BEGIN"
+        pm list packages 2>/dev/null | sed 's/^package://' | grep -iE 'phoenix|hongguo|duanju|shortplay|redfruit'
+        echo "##PM-END"
+        matches=${dollar}(grep -lE 'cdid|device_id' /data/data/*/shared_prefs/*.xml /data/user/[0-9]*/*/shared_prefs/*.xml /data/user_de/[0-9]*/*/shared_prefs/*.xml 2>/dev/null)
+        n=0
+        seen=""
+        for f in ${dollar}matches; do
+          key=${dollar}(echo "${dollar}f" | sed 's|^/data/data/|/data/user/0/|')
+          case " ${dollar}seen " in *" ${dollar}key "*) continue;; esac
+          seen="${dollar}seen ${dollar}key"
+          hits=${dollar}(grep -hE 'name="(device_id|deviceid|install_id|iid|installid|cdid)"' "${dollar}f" 2>/dev/null)
+          [ -n "${dollar}hits" ] || continue
+          n=${dollar}((n+1))
+          echo "##FILE ${dollar}f"
+          echo "${dollar}hits"
         done
+        echo "##CAND ${dollar}n"
+        echo "##OK"
         """.trimIndent()
 
     private fun startRead() {
         if (loading) return
         loading = true
         reloadButton.isEnabled = false
-        statusView.text = "正在读取…（首次会弹出 Magisk 授权，请点允许）"
+        statusView.text = "正在读取…（首次会弹出 root 授权，请点允许）"
         statusView.setBackgroundColor(Color.parseColor("#FFF4E5"))
         worker.execute {
-            val dump = runSu(dumpScript)
+            val dump = readDump()
             val outcome = IdentityParser.parse(dump)
             main.post {
                 loading = false
                 reloadButton.isEnabled = true
+                rawDump = dump
+                dumpFile = runCatching {
+                    File(cacheDir, "last-dump.txt").apply { writeText(dump) }
+                }.getOrNull()
                 apply(outcome)
             }
         }
     }
 
-    private fun runSu(script: String): String =
+    private fun readDump(): String =
+        runRootScript("scan.sh", dumpScript) { IdentityParser.parse(it) is IdentityParser.Outcome.Success }
+
+    /**
+     * 把脚本写到缓存目录再交给 su 执行，依次尝试三种调用方式，取第一个被 [accept] 认可的输出。
+     *
+     * 1. `nsenter -t 1 -m`：切到 init 的挂载命名空间。**这条最关键** —— 有些设备（实测
+     *    Android 15 + KernelSU 的盒子）root 之后命令仍留在调用方应用的命名空间里，
+     *    `/data/data` 被隔离成只剩应用自己的目录，红果的 prefs 直接「不存在」。
+     * 2. `--mount-master`：Magisk 的等价写法。
+     * 3. 直接执行：老设备 / 没有 nsenter 的 toybox。
+     *
+     * 都失败时返回信息量最大的那份输出，方便诊断。
+     */
+    private fun runRootScript(name: String, body: String, accept: (String) -> Boolean): String {
+        val file =
+            runCatching {
+                File(cacheDir, name).apply {
+                    writeText(body)
+                    setReadable(true, false)
+                }
+            }.getOrNull()
+        val attempts =
+            if (file == null) {
+                listOf(listOf("-c", body))
+            } else {
+                val path = file.absolutePath
+                listOf(
+                    listOf("-c", "nsenter -t 1 -m sh $path 2>/dev/null"),
+                    listOf("--mount-master", "-c", "sh $path 2>/dev/null"),
+                    listOf("-c", "sh $path"),
+                )
+            }
+
+        var best = ""
+        for (attempt in attempts) {
+            val output = runSu(attempt)
+            if (accept(output)) return output
+            if (output.count { it == '\n' } > best.count { it == '\n' }) best = output
+        }
+        return best
+    }
+
+    private fun runSu(arguments: List<String>): String =
         try {
-            val process = ProcessBuilder("su", "-c", script).redirectErrorStream(true).start()
+            val process = ProcessBuilder(listOf("su") + arguments).redirectErrorStream(true).start()
             val output = process.inputStream.bufferedReader().readText()
             process.waitFor()
             output
@@ -281,7 +359,8 @@ class MainActivity : Activity() {
                 idInstall.text = outcome.identity.installId
                 idCdid.text = outcome.identity.cdid
                 blockView.text = outcome.identity.block(outcome.pkg)
-                statusView.text = "读取成功 · 来源 ${outcome.pkg}"
+                statusView.text =
+                    "读取成功 · 来源 ${outcome.pkg}" + (outcome.note?.let { "\n$it" } ?: "")
                 statusView.setBackgroundColor(Color.parseColor("#E6F4EA"))
                 setActionsEnabled(true)
             }
@@ -297,6 +376,26 @@ class MainActivity : Activity() {
                 setActionsEnabled(false)
             }
         }
+        if (diagView.visibility == TextView.VISIBLE) renderDiag()
+    }
+
+    private fun toggleDiag() {
+        if (diagView.visibility == TextView.VISIBLE) {
+            diagView.visibility = TextView.GONE
+        } else {
+            renderDiag()
+            diagView.visibility = TextView.VISIBLE
+        }
+    }
+
+    private fun renderDiag() {
+        val text =
+            if (rawDump.isEmpty()) {
+                "还没有诊断数据，先点「重新读取」。"
+            } else {
+                rawDump
+            }
+        diagView.text = text.take(8000) + (dumpFile?.let { "\n\n原始输出：$it" } ?: "")
     }
 
     // ---------------------------------------------------------------- 导出
@@ -356,22 +455,18 @@ class MainActivity : Activity() {
     private fun writeToSdcard() {
         val block = currentBlock() ?: return
         val path = "/sdcard/hgtv/device-identity.txt"
+        val target = File(cacheDir, "device-identity.txt").apply { writeText(block) }
+        // 同样要切到 init 命名空间：应用自己的 /sdcard 视图和真实共享目录不是一回事
+        val script =
+            """
+            mkdir -p /sdcard/hgtv
+            cp ${target.absolutePath} $path
+            chmod 644 $path
+            echo "##OK"
+            """.trimIndent()
         worker.execute {
-            val ok =
-                try {
-                    val process =
-                        ProcessBuilder("su", "-c", "mkdir -p /sdcard/hgtv && cat > '$path' && chmod 644 '$path'")
-                            .redirectErrorStream(true)
-                            .start()
-                    process.outputStream.use {
-                        it.write(block.toByteArray(Charsets.UTF_8))
-                        it.flush()
-                    }
-                    process.inputStream.bufferedReader().readText()
-                    process.waitFor() == 0
-                } catch (e: Exception) {
-                    false
-                }
+            val output = runRootScript("write.sh", script) { it.contains("##OK") }
+            val ok = output.contains("##OK")
             main.post {
                 if (ok) toast("已写入 $path") else toast("写入失败，请确认已授予 root")
             }
