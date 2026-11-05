@@ -512,3 +512,58 @@ Rokid Station 是 Android TV 盒子（Amlogic S905Y4、2GB RAM、1920x1080@240dp
 仍成立：兼容请求再拿到全 bytevc2 时照旧报错，不会退化成只播音频。
 
 未验证：本机出口不能判断真实播放效果，改动是否覆盖到具体剧集需要在电视端实测。
+
+## 首页推荐与账号的一批线上修复移植（2026-11-05）
+
+来源是另一条开发线（`wuzuo/hongguoTV` main）在 2026-11-03 至 11-04 的八个提交。两个仓库没有
+共同祖先（本仓是 `git archive` 重建的历史），只能逐条按功能重写，不能 merge。
+
+### 1. 登录后推荐 110 ILLEGAL_ACCESS
+带账号 Cookie 时再附加 `device_id`/`iid`，feed 直接回 `110`；只带 Cookie 返回 `0`。根因是登录
+用的固定设备号在会话已代表身份时反而被判非法访问。`RecommendationFeed` 的账号分支不再追加这
+两个参数（分类推荐共用同一份参数，一并生效）。
+
+### 2. 推荐失败时换路与丢弃旧会话
+每次重试不再固定打 `sinfonlinea`，改为按 `sinfonlinea → hl → lf` 轮换同族域名；本地已有
+`session` 而响应非 0 码时，清空 `session`/`offset` 从头拉一次（仍最多三次），避免分页会话
+被判无效后只能等下次刷新。注意这与播放接口的「换路」策略同源，但不改设备身份。
+
+### 3. 首页 offset 按条推进
+服务端 offset 的单位是「条」而不是「页」：一次返回 6 条却只前进 1，会让每页与上一页重叠 5 条。
+改为按本次响应实际下发的条数（`rawVideoCount`，统计 `video_data` 原始行数，不是去重后的条目）
+前进，分类推荐继续使用服务端 `next_offset`。回归里 fixture 每页 2 行，断言请求 offset 序列为
+`0 → 2 → 4`。
+
+### 4. 首页续刷（冷启动接着上次）
+`RecommendationCursor` 增加 `snapshot()` / `restore()` / `hasProgress` / `markSeen()`，并给
+`seen` 单独加锁（界面线程展示记录与后台分页共用集合，不能让界面等分页的网络锁）。快照只含
+`session`、`offset` 与最近 540 个已看 ID，不含任何凭据，超过 4096 字符的 session 或越界 offset
+一律拒绝恢复。
+
+`FeedStartupCache` 增加 `cursor:<source>`（64 KiB 上限，`commit()` 同步落盘——刷几部就强退时
+`apply()` 的异步写会丢）。`PublicFeedBackend.page()` 在冷启动且游标无进度时先恢复快照，恢复成功
+就跳过首屏缓存直接续拉；每次取页后回写快照。`noteDisplayed()` 由 `HomeFeedScreen.loadCurrent()`
+与预加载直切两处调用，把展示过的作品写进 seen，下次冷启动在 parse 阶段就被过滤掉。
+
+账号时序：`AccountController` 记录 `accountRestored` / `accountRestoreFailed`，新增
+`recommendationLoading`；身份恢复与云端校验结束前 `recommendationStartupCache()` 返回 null，首页
+改为显示「正在恢复账号推荐…」暂不创建，避免临时 guest 后端按单一 owner 隔离把账号游标清掉。
+身份字符串带上「是否已确认」，恢复完成的瞬间就会触发首页重建。
+
+### 5. 账号未建档
+`biz_user_id` 为空说明该手机号从未在官方 App 侧建立账号资料，与登录链路无关。新增
+`AccountNotProvisionedException`，提示改为「请先用官方红果 App 登录一次（或改用扫码）」，不再
+让用户反复重试登录。
+
+### Windows 端
+`bridge` 直接引用 `core`，上述 1–3 与 5 随 core.jar 自动生效。第 4 项的落盘在 bridge 里补：
+启动时从 `feed-cursor.json`（程序目录，缺省 `~/.hgtv/`）恢复游标，每次取页后回写；同时去掉
+「page=1 且非 refresh 就把游标重置成新的」那行，否则刚恢复的快照会被立刻丢掉。Windows 界面
+的「换一批」仍走 `refresh=true`，语义不变。
+
+### 验证
+`RecommendationFeedTest` 新增 `staleSessionErrorDropsCursorAndRotatesHost`（110 → 换域 → offset 0）、
+`snapshotKeepsSessionOffsetAndSeenWithoutCredentialFields`、`malformedSnapshotIsRejectedAndLeavesCursorUntouched`；
+`FeedStartupCacheTest` 新增游标身份隔离与「冷启动续刷优先于首屏缓存」两条。core 251 项仅剩既有的
+Windows 原子重命名失败，app 单测、assembleDebug、lintDebug 与 bridge 测试通过。
+未验证：真实账号下的 110 是否彻底消失、续刷在真机冷启动的表现，本机只能验证请求构造与落盘。

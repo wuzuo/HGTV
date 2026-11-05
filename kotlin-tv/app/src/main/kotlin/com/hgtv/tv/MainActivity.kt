@@ -726,7 +726,8 @@ class MainActivity : Activity() {
             if (homeFeedIdentity != cloudAccount.recommendationIdentity) {
                 homeFeedState.refresh(resetRecommendations = true)
                 homeFeedIdentity = cloudAccount.recommendationIdentity
-                if (homeFeed != null) showCatalog()
+                if (homeFeed != null || (screen == "catalog" && tab == 0 && library.isLoaded))
+                    showCatalog()
             }
             homeFeed?.refreshAccountLabel()
             relatedSection?.refreshLabels()
@@ -1216,6 +1217,12 @@ class MainActivity : Activity() {
         if (tab == 0) {
             favoriteMonitor.stop()
             homeFeedIdentity = cloudAccount.recommendationIdentity
+            // 账号恢复期间先不建首页：临时 guest 后端会把已保存的账号续刷游标当成别人的清掉。
+            if (cloudAccount.recommendationLoading) {
+                container.addView(text("正在恢复账号推荐…", 18f, muted))
+                if (focusNav) nav[0].requestFocus()
+                return
+            }
             val feed =
                 HomeFeedScreen(
                     this,
@@ -1227,7 +1234,7 @@ class MainActivity : Activity() {
                     PublicFeedBackend(
                         library.maxQuality,
                         account = cloudAccount.recommendationCredentials(),
-                        startupCache = FeedStartupCache(this),
+                        startupCache = cloudAccount.recommendationStartupCache(),
                     ),
                     Media3TrialPlayback(this),
                 )

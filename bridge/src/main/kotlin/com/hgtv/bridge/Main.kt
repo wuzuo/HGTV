@@ -26,7 +26,25 @@ fun main() {
     // 启动就读一次：前端通过 /identity 查询「有没有读到配置」，不必等到第一次播放。
     DeviceIdentityMonitor.resolve()
     val repository=ContentRepository()
-    var feedCursor=DramaFeedState().recommendationCursor
+    // 冷启动接着上次刷：服务端在没有 session_id 时永远返回同一批冷启动内容，
+    // 所以把分页会话与 offset 落盘，下次启动先恢复再请求。快照只含分页状态与已看 ID。
+    val feedCursorFile =
+        appRoot?.resolve("feed-cursor.json")
+            ?: java.io.File(System.getProperty("user.home") ?: ".", ".hgtv/feed-cursor.json")
+    fun restoreFeedCursor(): RecommendationCursor =
+        DramaFeedState().recommendationCursor.also { cursor ->
+            runCatching {
+                if (feedCursorFile.isFile && feedCursorFile.length() <= 64_000)
+                    cursor.restore(feedCursorFile.readText())
+            }
+        }
+    fun saveFeedCursor(cursor: RecommendationCursor) {
+        runCatching {
+            feedCursorFile.parentFile?.mkdirs()
+            feedCursorFile.writeText(cursor.snapshot())
+        }
+    }
+    var feedCursor=restoreFeedCursor()
     val catalogLock=Any()
     val account=MacAccount(repository)
     val publicComments=PublicComments(repository.http)
@@ -134,8 +152,9 @@ fun main() {
                     if(query["refresh"]=="true") feedCursor=feedCursor.nextBatch()
                     val category=query["category"]?.takeIf { it!="ALL" }?.let { DramaCategory.valueOf(it) }
                     val page=query["page"]?.toInt() ?: 1
-                    if(page==1 && query["refresh"]!="true") feedCursor=DramaFeedState().recommendationCursor
+                    // page=1 不再把游标重置成新的：冷启动要从落盘快照接着刷，「换一批」走 refresh=true。
                     val result=RecommendationFeed(repository.http,account=account.snapshot(),cursor=feedCursor,category=category).page(page)
+                    saveFeedCursor(feedCursor)
                     json(exchange,JSONObject().put("items",JSONArray(result.items.map { it.toJson() })).put("hasMore",result.hasMore).put("topics",JSONArray()))
                 }
                 "related" -> {

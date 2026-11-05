@@ -5,6 +5,8 @@ import android.app.Activity
 import com.hgtv.core.*
 import okhttp3.*
 import okhttp3.ResponseBody.Companion.toResponseBody
+import org.json.JSONArray
+import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -113,6 +115,100 @@ class FeedStartupCacheTest {
             assertEquals(2, paths.count { it == "/novel/player/multi_video_model/player/v1" })
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
             assertEquals(5, paths.size)
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun cursorSnapshotIsScopedToIdentityAndOwnerChangeClearsIt() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(controller.get()) { 1000L }
+        try {
+            val snapshot = """{"session":"s-1","offset":6,"seen":["101"]}"""
+            cache.saveCursor("test-account-a", "recommend", snapshot)
+            assertEquals(snapshot, cache.loadCursor("test-account-a", "recommend"))
+            assertNull(cache.loadCursor("test-account-a", DramaCategory.COMIC.route))
+            // 身份一变（换账号/退出）整份缓存清空，不能把上一个账号的续刷位置带过去。
+            assertNull(cache.loadCursor("test-account-b", "recommend"))
+            assertNull(cache.loadCursor("test-account-a", "recommend"))
+            cache.saveCursor("test-account-a", "recommend", snapshot)
+            // 超过 64 KiB 的快照不落盘。
+            cache.saveCursor("test-account-a", "recommend", "x".repeat(64_001))
+            assertEquals(snapshot, cache.loadCursor("test-account-a", "recommend"))
+        } finally {
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun coldStartResumesSavedCursorInsteadOfReplayingStarterPage() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val cache = FeedStartupCache(controller.get()) { 1000L }
+        cache.save("guest", "recommend", page)
+        cache.saveCursor("guest", "recommend", """{"session":"old-session","offset":6,"seen":["101"]}""")
+        val requests = java.util.concurrent.CopyOnWriteArrayList<Request>()
+        fun payload(): String {
+            val card =
+                JSONObject()
+                    .put("series_id", "202")
+                    .put("series_title", "续刷作品")
+                    .put("episode_cnt", 3)
+            val tab =
+                JSONObject()
+                    .put("tab_type", 16)
+                    .put("session_id", "live-session")
+                    .put(
+                        "cell_data",
+                        JSONArray()
+                            .put(
+                                JSONObject()
+                                    .put(
+                                        "cell_data",
+                                        JSONArray()
+                                            .put(JSONObject().put("video_data", JSONArray().put(card))),
+                                    ),
+                            ),
+                    )
+            return JSONObject()
+                .put("code", 0)
+                .put("data", JSONObject().put("tab_item", JSONArray().put(tab)))
+                .toString()
+        }
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    requests += chain.request()
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(payload().toResponseBody())
+                        .build()
+                }
+                .build()
+        try {
+            val backend =
+                PublicFeedBackend(
+                    720,
+                    http = http,
+                    startupCache = cache,
+                    playbackSession = testPlaybackDeviceSession(),
+                )
+            try {
+                val result = backend.recommendations(1, DramaFeedState().recommendationCursor)
+                // 有续刷快照时直接续拉，不再复用首屏缓存里的那一部。
+                assertEquals(listOf("202"), result.items.map { it.id })
+                assertEquals("old-session", requests.single().url.queryParameter("session_id"))
+                assertEquals("6", requests.single().url.queryParameter("offset"))
+                assertEquals(
+                    "live-session",
+                    JSONObject(cache.loadCursor("guest", "recommend")!!).optString("session"),
+                )
+            } finally {
+                backend.close()
+            }
         } finally {
             controller.pause().stop().destroy()
         }

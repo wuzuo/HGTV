@@ -12,7 +12,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** In-memory pagination only; never serialize the server session. */
+/** Pagination cursor; only bounded, account/source-scoped snapshots are used for cold starts. */
 class RecommendationCursor
 internal constructor(
     @Volatile internal var session: String = "",
@@ -23,7 +23,59 @@ internal constructor(
     internal var lastPage = 0
     internal var lastResult: CatalogPage? = null
 
-    fun nextBatch() = RecommendationCursor(session, offset).also { it.seen.addAll(seen) }
+    fun nextBatch() = RecommendationCursor(session, offset).also { it.remember(seenIds()) }
+
+    // UI 展示记录与后台分页共用同一集合；单独锁集合，避免界面线程等待分页的网络锁。
+    internal fun seenIds(): Set<String> = synchronized(seen) { seen.toSet() }
+
+    internal fun remember(ids: Collection<String>) {
+        synchronized(seen) {
+            seen.addAll(ids)
+            while (seen.size > 540) seen.remove(seen.first())
+        }
+    }
+
+    /**
+     * 冷启动续刷用的最小快照：分页会话、offset 与最近看过的 ID。不含任何凭据。
+     *
+     * 服务端在无 `session_id` 时总是返回同一批冷启动内容（实测 offset 也会被忽略），
+     * 所以想「下次进来接着刷」只能把会话和 offset 带过去。
+     */
+    fun snapshot(): String =
+        JSONObject()
+            .put("session", session)
+            .put("offset", offset)
+            .put("seen", JSONArray(seenIds().toList()))
+            .toString()
+
+    /** 记录一部已在首页展示过的作品；冷启动时用它跳过重复内容。 */
+    fun markSeen(id: String) {
+        if (id.isBlank() || id.length > 32) return
+        remember(listOf(id))
+    }
+
+    /** 是否已经刷出进度（有服务端会话或非零 offset）；用于判断要不要接着上次继续。 */
+    val hasProgress: Boolean
+        get() = session.isNotEmpty() || offset > 0
+
+    /** 恢复 [snapshot]；格式不合法或数值越界时返回 false，调用方按新会话处理。 */
+    fun restore(value: String): Boolean {
+        val saved = runCatching { JSONObject(value) }.getOrNull() ?: return false
+        val savedSession = saved.optString("session")
+        val savedOffset = saved.optInt("offset", 0)
+        if (savedSession.length > 4096 || savedOffset !in 0..1_000_000) return false
+        session = savedSession
+        offset = savedOffset
+        synchronized(seen) {
+            seen.clear()
+            saved.optJSONArray("seen")?.let { rows ->
+                for (i in 0 until minOf(rows.length(), 540)) {
+                    rows.optString(i).takeIf(String::isNotBlank)?.let { seen += it }
+                }
+            }
+        }
+        return true
+    }
 
     /**
      * A local starter page, with no persisted server session. The next read starts a new server
@@ -36,11 +88,11 @@ internal constructor(
                 lastPage != 0 ||
                 offset != 0 ||
                 session.isNotBlank() ||
-                seen.isNotEmpty() ||
+                seenIds().isNotEmpty() ||
                 page.items.isEmpty()
         )
             return false
-        seen.addAll(page.items.map { it.id })
+        remember(page.items.map { it.id })
         lastResult = page
         lastPage = 1
         expectedPage = 2
@@ -63,7 +115,7 @@ class RecommendationFeed(
             require(page in 1..100)
             if (page == cursor.lastPage) return@synchronized checkNotNull(cursor.lastResult)
             if (page != cursor.expectedPage) throw IOException("推荐已刷新，请重新获取")
-            repeat(3) {
+            repeat(3) { attempt ->
                 val params =
                     linkedMapOf(
                             "aid" to "8662",
@@ -99,8 +151,9 @@ class RecommendationFeed(
                                         "ac",
                                     )
                                 putAll(it.device.filterKeys { key -> key in allowed })
-                                if (it.deviceId.isNotBlank()) put("device_id", it.deviceId)
-                                if (it.installId.isNotBlank()) put("iid", it.installId)
+                                // 登录后不再带 device_id/iid：带账号 Cookie 时再塞登录用的固定
+                                // 设备号，feed 会回 `110 ILLEGAL_ACCESS`；只带 Cookie 才是 0。
+                                // 设备身份由会话自身体现。
                             }
                             put("version_code", "73532")
                             put("version_name", "7.3.5.32")
@@ -114,7 +167,9 @@ class RecommendationFeed(
                             put("_rticket", System.currentTimeMillis().toString())
                             if (cursor.session.isNotEmpty()) put("session_id", cursor.session)
                         }
-                val host = "https://api5-normal-sinfonlinea.fqnovel.com"
+                // 主域之外再备两个同族域名：110 一类校验/限流错误换路比反复打同一节点更容易
+                // 逃出去（与播放接口的换路策略一致）。
+                val host = FEED_HOSTS[attempt % FEED_HOSTS.size]
                 val request =
                     if (category == null) {
                         val url = "$host/reading/bookapi/bookmall/tab/v1/".toHttpUrl().newBuilder()
@@ -147,7 +202,7 @@ class RecommendationFeed(
                                 .put("need_selector_panel", false)
                                 .put("client_req_type", if (cursor.offset == 0) 3 else 2)
                                 .put("session_id", cursor.session)
-                                .put("filter_ids", cursor.seen.joinToString(","))
+                                .put("filter_ids", cursor.seenIds().joinToString(","))
                                 .put("select_items", selector)
                                 .toString()
                                 .toByteArray()
@@ -191,18 +246,33 @@ class RecommendationFeed(
                     RequestScope.execute(accountHttp.newCall(request.build())) { response ->
                         JSONObject(feedResponse(response))
                     }
-                val parsed = if (category == null) parse(result) else parseCategory(result)
+                val parsed =
+                    runCatching { if (category == null) parse(result) else parseCategory(result) }
+                        .getOrElse { problem ->
+                            // 110 一类错误多来自服务端判定旧分页会话不合法：丢掉旧 session 与
+                            // offset 从头拉一次，否则用户只能等下次刷新才恢复。
+                            val code = result.optInt("code", -1)
+                            if (code != 0 && cursor.session.isNotEmpty() && problem is IOException) {
+                                cursor.session = ""
+                                cursor.offset = 0
+                                return@repeat
+                            }
+                            throw problem
+                        }
                 cursor.session = parsed.second.ifBlank { cursor.session }
                 cursor.offset =
-                    if (category == null) cursor.offset + 1
-                    else
+                    if (category == null) {
+                        // 服务端 offset 的单位是「条」：一次返回 6 条时只前进 1 会与上一页重叠
+                        // 5 条，首页就会反复看到同样内容。按本次实际下发的条数前进。
+                        cursor.offset + maxOf(1, rawVideoCount(result))
+                    } else
                         result
                             .getJSONObject("data")
                             .optInt("next_offset", cursor.offset + parsed.first.items.size)
-                val fresh =
-                    parsed.first.copy(items = parsed.first.items.filter { it.id !in cursor.seen })
-                cursor.seen.addAll(parsed.first.items.map { it.id })
-                while (cursor.seen.size > 540) cursor.seen.remove(cursor.seen.first())
+                val seen = cursor.seenIds()
+                val fresh = parsed.first.copy(items = parsed.first.items.filter { it.id !in seen })
+                cursor.remember(parsed.first.items.map { it.id })
+                // offset 上面已按本次下发的条数推进，整页都被 seen 过滤掉时会自动落到下一批。
                 if (fresh.items.isEmpty()) return@repeat
                 cursor.expectedPage = page + 1
                 cursor.lastPage = page
@@ -218,6 +288,29 @@ class RecommendationFeed(
          * MiB account reader must not gate this feed.
          */
         private const val FEED_RESPONSE_LIMIT = 16 * 1024 * 1024L
+
+        /** 推荐可用的同族域名；首选项沿用原来的 fqnovel 端点。 */
+        private val FEED_HOSTS =
+            listOf(
+                "https://api5-normal-sinfonlinea.fqnovel.com",
+                "https://api5-normal-hl.fqnovel.com",
+                "https://api5-normal-lf.fqnovel.com",
+            )
+
+        /** 一次响应里实际下发的视频条数，用于推进服务端的按条 offset。 */
+        internal fun rawVideoCount(result: JSONObject): Int {
+            val tab =
+                result.optJSONObject("data")?.optJSONArray("tab_item")?.optJSONObject(0) ?: return 0
+            val cells = tab.optJSONArray("cell_data") ?: return 0
+            var count = 0
+            for (i in 0 until cells.length()) {
+                val inner = cells.optJSONObject(i)?.optJSONArray("cell_data") ?: continue
+                for (k in 0 until inner.length()) {
+                    count += inner.optJSONObject(k)?.optJSONArray("video_data")?.length() ?: 0
+                }
+            }
+            return count
+        }
 
         internal fun feedResponse(response: okhttp3.Response): String {
             if (!response.isSuccessful) throw IOException("推荐请求失败（HTTP ${response.code}）")

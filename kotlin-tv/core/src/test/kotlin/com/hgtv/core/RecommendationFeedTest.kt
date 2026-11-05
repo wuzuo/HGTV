@@ -112,7 +112,8 @@ class RecommendationFeedTest {
         assertSame(second, RecommendationFeed(http, cursor = cursor).page(2))
         assertEquals(2, requests.size)
         RecommendationFeed(http, cursor = cursor.nextBatch()).page(1)
-        assertEquals(listOf("0", "1", "2"), requests.map { it.url.queryParameter("offset") })
+        // 服务端 offset 的单位是「条」：这一份 fixture 每页下发 2 条视频卡，所以按 2 前进。
+        assertEquals(listOf("0", "2", "4"), requests.map { it.url.queryParameter("offset") })
         assertNull(requests[0].header("Cookie"))
         assertNull(requests[0].url.queryParameter("device_id"))
         assertEquals("test-page-session", requests[1].url.queryParameter("session_id"))
@@ -145,7 +146,7 @@ class RecommendationFeedTest {
     }
 
     @Test
-    fun accountIdentityIsSentOnlyToOfficialFeedAndGuestCursorIsSeparate() {
+    fun accountCookieIsSentOnlyToOfficialFeedAndGuestCursorIsSeparate() {
         var requested: Request? = null
         val http =
             OkHttpClient.Builder()
@@ -165,7 +166,9 @@ class RecommendationFeedTest {
         RecommendationFeed(http, account).page(1)
         assertEquals("api5-normal-sinfonlinea.fqnovel.com", requested!!.url.host)
         assertEquals(account.cookie, requested!!.header("Cookie"))
-        assertEquals("test-device", requested!!.url.queryParameter("device_id"))
+        // 登录后不再带设备号：带 Cookie 时再塞 device_id/iid 会被判 110 ILLEGAL_ACCESS。
+        assertNull(requested!!.url.queryParameter("device_id"))
+        assertNull(requested!!.url.queryParameter("iid"))
         RecommendationFeed(http).page(1)
         assertNull(requested!!.header("Cookie"))
         assertNull(requested!!.url.queryParameter("session_id"))
@@ -308,5 +311,68 @@ class RecommendationFeedTest {
                 .build()
         val page = RecommendationFeed(http).page(1)
         assertEquals(listOf("101"), page.items.map { it.id })
+    }
+
+    @Test
+    fun staleSessionErrorDropsCursorAndRotatesHost() {
+        val requests = mutableListOf<Request>()
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val req = chain.request()
+                    requests += req
+                    val body =
+                        if (requests.size == 1)
+                            JSONObject().put("code", 110).put("data", JSONObject()).toString()
+                        else response()
+                    Response.Builder()
+                        .request(req)
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(200)
+                        .message("OK")
+                        .body(body.toResponseBody("application/json".toMediaType()))
+                        .build()
+                }
+                .build()
+        val cursor = RecommendationCursor()
+        cursor.session = "stale-session"
+        val page = RecommendationFeed(http, cursor = cursor).page(1)
+        assertEquals(listOf("101"), page.items.map { it.id })
+        // 第一次带着被判无效的会话打到主域；重试丢掉 session/offset 并换到同族备用域名。
+        assertEquals("stale-session", requests[0].url.queryParameter("session_id"))
+        assertEquals("api5-normal-sinfonlinea.fqnovel.com", requests[0].url.host)
+        assertEquals("api5-normal-hl.fqnovel.com", requests[1].url.host)
+        assertNull(requests[1].url.queryParameter("session_id"))
+        assertEquals("0", requests[1].url.queryParameter("offset"))
+        // 成功后按新会话继续。
+        assertEquals("test-page-session", cursor.session)
+    }
+
+    @Test
+    fun snapshotKeepsSessionOffsetAndSeenWithoutCredentialFields() {
+        val cursor = RecommendationCursor()
+        cursor.session = "session-1"
+        cursor.offset = 27
+        cursor.markSeen("101")
+        cursor.markSeen("102")
+        val restored = RecommendationCursor()
+        assertFalse(restored.hasProgress)
+        assertTrue(restored.restore(cursor.snapshot()))
+        assertTrue(restored.hasProgress)
+        assertEquals("session-1", restored.session)
+        assertEquals(27, restored.offset)
+        assertEquals(setOf("101", "102"), restored.seenIds())
+        // 快照只含分页状态与已看 ID，不含任何凭据字段。
+        assertEquals(setOf("session", "offset", "seen"), JSONObject(cursor.snapshot()).keys().asSequence().toSet())
+    }
+
+    @Test
+    fun malformedSnapshotIsRejectedAndLeavesCursorUntouched() {
+        val cursor = RecommendationCursor()
+        assertFalse(cursor.restore("not json"))
+        assertFalse(cursor.restore("""{"session":"s","offset":-5}"""))
+        assertFalse(cursor.hasProgress)
+        // 越界的 offset 不能被接受，否则会从头拉一个不存在的分页。
+        assertFalse(cursor.restore("""{"session":"s","offset":2000000}"""))
     }
 }

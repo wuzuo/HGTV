@@ -605,6 +605,8 @@ internal class HomeFeedScreen(
     private fun loadCurrent() {
         val series = state.current ?: return
         if (!active || closed) return
+        // 记下展示过的作品：冷启动时用它跳过重复内容，而不是每次都从同一部开始。
+        noteDisplayed(series)
         clearCurrent(keepPrefetch = prefetchTarget == series.id)
         failed = false
         describe()
@@ -620,6 +622,13 @@ internal class HomeFeedScreen(
             android.util.Log.i("HGTV", "Home promoted in-flight preload")
         } else request({ backend.trial(series) }, { it.close() }, ::attach)
     }
+
+    private fun noteDisplayed(series: Series) =
+        backend.noteDisplayed(
+            series,
+            state.recommendationCursor,
+            if (state.recommendation) null else state.category,
+        )
 
     private fun attach(next: TrialClip) {
         clip = next
@@ -771,6 +780,7 @@ internal class HomeFeedScreen(
         )
         if (state.move(delta)) {
             if (ready != null) {
+                noteDisplayed(target)
                 failed = false
                 describe()
                 status.visibility = View.VISIBLE

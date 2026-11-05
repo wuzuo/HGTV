@@ -117,6 +117,8 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     private var reservations = emptyMap<Boolean, ReservationState>()
     private var status = "未登录"
     private var busy = false
+    private var accountRestored = false
+    private var accountRestoreFailed = false
     private var lastUpload = 0L
     private var lastEpisode = ""
     private var pending: Pair<CloudProgress, Int>? = null
@@ -127,8 +129,19 @@ class AccountController(private val activity: Activity, private val play: (Cloud
 
     internal fun recommendationCredentials() = credentials?.takeIf { profile != null }
 
+    internal val recommendationLoading
+        get() = !accountRestored || (credentials != null && profile == null && busy)
+
+    // 未确认身份时不能让临时 guest 清空已保存的账号推荐游标。
+    internal fun recommendationStartupCache(): FeedStartupCache? =
+        if (accountRestored && !accountRestoreFailed && (credentials == null || profile != null))
+            FeedStartupCache(activity)
+        else null
+
     internal val recommendationIdentity
-        get() = "$generation:${profile?.id.orEmpty()}"
+        get() =
+            "$generation:${profile?.id.orEmpty()}:$recommendationLoading:" +
+                "${accountRestored && !accountRestoreFailed}"
 
     val signedIn
         get() = credentials != null
@@ -365,12 +378,13 @@ class AccountController(private val activity: Activity, private val play: (Cloud
             val saved = runCatching { store.read() }
             main.post {
                 if (closed || token != generation) return@post
+                accountRestored = true
+                accountRestoreFailed = saved.isFailure
                 credentials = saved.getOrNull()
                 status =
                     if (credentials != null) "登录态已恢复，打开账号页面刷新云端记录"
                     else if (saved.isFailure) "登录态无法读取，请重新登录" else "未登录"
-                changed()
-                if (credentials != null) refresh(false)
+                if (credentials != null) refresh(false) else changed()
             }
         }
     }
@@ -523,6 +537,8 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     }
 
     private fun acceptAccount(next: AccountCredentials, account: CloudProfile) {
+        accountRestored = true
+        accountRestoreFailed = false
         credentials = next
         profile = account
         history = emptyList()
@@ -749,6 +765,8 @@ class AccountController(private val activity: Activity, private val play: (Cloud
     }
 
     private fun logout() {
+        accountRestored = true
+        accountRestoreFailed = false
         generation++
         busy = false
         credentials = null
