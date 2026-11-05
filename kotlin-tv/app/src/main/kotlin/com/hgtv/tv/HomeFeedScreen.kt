@@ -17,6 +17,14 @@ import com.hgtv.core.*
 import java.io.Closeable
 import java.util.concurrent.Executors
 
+/**
+ * 首页顶部的「最近一条播放历史」入口。
+ *
+ * 文案由调用方拼好（剧名、集数、进度都是调用方才知道的），点开之后去哪也由调用方决定；
+ * 首页只负责把它摆出来、跟着焦点走。返回 null 表示本机还没有观看记录，整行不占位。
+ */
+internal data class ResumeShortcut(val label: String, val open: () -> Unit)
+
 /** A separate trial player. Never calls Library.save or AccountController.upload. */
 internal class HomeFeedScreen(
     private val activity: Activity,
@@ -27,6 +35,7 @@ internal class HomeFeedScreen(
     private val favoriteLabel: (String) -> String,
     private val backend: FeedBackend,
     private val playback: TrialPlayback,
+    private val resumeShortcut: () -> ResumeShortcut? = { null },
 ) : LinearLayout(activity), Closeable {
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
@@ -52,6 +61,8 @@ internal class HomeFeedScreen(
     private var loading = false
     private var failed = false
     private val stage = FrameLayout(activity)
+    /** 本机有播放历史时为 true；操作栏展开期间控件会临时收起，靠它决定要不要还原。 */
+    private var resumeAvailable = false
     private val title = label("发现下一部好剧", 26f, TvStyle.textStrong)
     private val meta = label("第一集试播", 13f, TvStyle.accent)
     private val intro = label("喜欢这部作品，就选择观看全集。", 15f, TvStyle.textDim)
@@ -61,6 +72,7 @@ internal class HomeFeedScreen(
     private val buttons = mutableListOf<TextView>()
     private val pauseButton: TextView
     private val watchButton: TextView
+    private val resumeButton: TextView
     private lateinit var favoriteButton: TextView
     private val recommendButton: TextView
     private val comicButton: TextView
@@ -159,6 +171,70 @@ internal class HomeFeedScreen(
         )
     }
 
+    /** 「继续观看」是入口而不是主操作：常态凹陷配强调色文字，焦点时整条点亮。 */
+    private fun paintResume() {
+        val focused = resumeButton.hasFocus()
+        resumeButton.background =
+            if (focused)
+                TvStyle.soft(
+                    activity,
+                    TvStyle.lit,
+                    TvStyle.RADIUS_PILL,
+                    TvStyle.SOFT_BAND,
+                    SoftStyle.RAISED,
+                    glow = TvStyle.litGlow,
+                    depth = 1.2f,
+                )
+            else
+                TvStyle.well(
+                    activity,
+                    TvStyle.selectedWell,
+                    TvStyle.RADIUS_PILL,
+                    TvStyle.SOFT_BAND,
+                    depth = 1.1f,
+                )
+        resumeButton.setTextColor(if (focused) TvStyle.onLit else TvStyle.accent)
+        resumeButton.setTypeface(null, if (focused) Typeface.BOLD else Typeface.NORMAL)
+    }
+
+    /**
+     * 刷新「继续观看」这一行。
+     *
+     * 没有观看记录时整行不占位，并把试播画面的「右」重新指回自己——否则焦点会走到一个看不见的
+     * 控件上，按右没反应。有记录时把「上」接到当前选中的分类按钮，与其它控件的焦点链保持一致。
+     */
+    private fun refreshResume() {
+        val shortcut = resumeShortcut()
+        resumeAvailable = shortcut != null
+        // 操作栏展开时右侧只有约 300dp，这一行先让位；收起操作栏时 back() 会把它放回来。
+        val crowded = actions.visibility == View.VISIBLE
+        if (shortcut == null) {
+            resumeButton.visibility = View.GONE
+            stage.nextFocusRightId = stage.id
+            return
+        }
+        resumeButton.text = shortcut.label
+        resumeButton.contentDescription = shortcut.label
+        resumeButton.visibility = if (crowded) View.GONE else View.VISIBLE
+        if (crowded) {
+            stage.nextFocusRightId = stage.id
+            return
+        }
+        val above =
+            when {
+                state.recommendation -> recommendButton
+                state.category == DramaCategory.COMIC -> comicButton
+                else -> realButton
+            }
+        resumeButton.nextFocusUpId = above.id
+        resumeButton.nextFocusDownId = stage.id
+        resumeButton.nextFocusLeftId = stage.id
+        resumeButton.nextFocusRightId = resumeButton.id
+        // 在画面上按「右」就是这一条，比从分类栏一路往下按更顺手。
+        stage.nextFocusRightId = resumeButton.id
+        paintResume()
+    }
+
     // 组装首页布局和点击事件；分类栏、内容区、操作栏按纵向排列。
     init {
         orientation = VERTICAL
@@ -248,6 +324,40 @@ internal class HomeFeedScreen(
                 orientation = VERTICAL
                 setPadding(0, dp(14), 0, dp(10))
             }
+        // 最近一条播放历史放在正文最上方：进首页按方向键就能碰到，不必先进「观看历史」页。
+        // 用凹陷的底槽而不是凸起按钮，跟下面「观看全集」那排主操作区分开。
+        resumeButton =
+            label("", 13.5f, TvStyle.accent).apply {
+                id = View.generateViewId()
+                isFocusable = true
+                isFocusableInTouchMode = true
+                isClickable = true
+                gravity = Gravity.CENTER_VERTICAL
+                maxLines = 1
+                ellipsize = TextUtils.TruncateAt.END
+                minHeight = dp(TvStyle.BUTTON_COMPACT)
+                setPadding(dp(18), dp(6), dp(18), dp(6))
+                background =
+                    TvStyle.well(
+                        activity,
+                        TvStyle.selectedWell,
+                        TvStyle.RADIUS_PILL,
+                        TvStyle.SOFT_BAND,
+                        depth = 1.1f,
+                    )
+                setOnFocusChangeListener { view, _ ->
+                    paintResume()
+                    TvStyle.focus(view, view.hasFocus(), 1.02f)
+                }
+                setOnClickListener {
+                    val shortcut = resumeShortcut() ?: return@setOnClickListener
+                    // 与「观看全集」同一条路：先记下这一屏的试播进度，再离开首页。
+                    remember()
+                    pause()
+                    shortcut.open()
+                }
+            }
+        info.addView(resumeButton, lp(-1, -2).apply { bottomMargin = dp(12) })
         title.typeface = Typeface.DEFAULT_BOLD
         // 标题最多三行、简介最多四行：底部操作按钮出现时右侧高度只有 300dp，
         // 这两段的上限压住之后，最后一行按键提示才不会贴着卡片边缘甚至溢出。
@@ -430,6 +540,10 @@ internal class HomeFeedScreen(
     fun back(): Boolean {
         if (actions.visibility != View.VISIBLE) return false
         actions.visibility = View.GONE
+        if (resumeAvailable) {
+            resumeButton.visibility = View.VISIBLE
+            stage.nextFocusRightId = resumeButton.id
+        }
         stage.requestFocus()
         return true
     }
@@ -440,6 +554,12 @@ internal class HomeFeedScreen(
 
     // 遥控器确定键或点击视频后显示操作栏，并将焦点移到可用操作。
     private fun showActions() {
+        // 操作栏一出现，右侧只剩约 300dp：先收起「继续观看」，否则按键提示会被挤出卡片。
+        // 这时「观看全集」本来就在手边，收起这一行不会少一条路；返回时再放回来。
+        if (resumeAvailable) {
+            resumeButton.visibility = View.GONE
+            stage.nextFocusRightId = stage.id
+        }
         actions.visibility = View.VISIBLE
         paintActions()
         (if (watchButton.isEnabled) watchButton else pauseButton).requestFocus()
@@ -478,6 +598,7 @@ internal class HomeFeedScreen(
             series?.description?.ifBlank { "先试试看，喜欢这部作品就选择观看全集。" } ?: "选择漫剧或真人剧，上下换一部，找到想追的故事。"
         tag.text = if (state.recommendation) "推荐 · 第一集试播" else "${state.category.label}推荐 · 第一集试播"
         paintActions()
+        refreshResume()
     }
 
     private fun remember() {

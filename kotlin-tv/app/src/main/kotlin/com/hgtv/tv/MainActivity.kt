@@ -1147,6 +1147,24 @@ class MainActivity : Activity() {
         if (status == cloudAccount.accountLabel) status
         else "${cloudAccount.accountLabel} · $status"
 
+    /**
+     * 首页顶部的「最近一条播放历史」。
+     *
+     * 只取一条：本机历史按更新时间倒序，第一条就是最近看的那一集。点进去直接续播那一集
+     * （整集已看完时 `openDetail` 会顺延到下一集）。本机片库尚未读完或没有记录时返回 null，
+     * 首页不显示这一行、也不占位。
+     */
+    private fun resumeShortcut(): ResumeShortcut? {
+        if (!library.isLoaded) return null
+        val progress = library.history().firstOrNull() ?: return null
+        val where =
+            if (progress.completed) "接着看下一集"
+            else "第 ${progress.episodeIndex + 1} 集 · ${formatTime(progress.position)}"
+        return ResumeShortcut("继续观看 · ${progress.series.title} · $where") {
+            openDetail(progress.series, resume = true)
+        }
+    }
+
     // 内容页总入口：构建顶部导航，再根据当前栏目挂载首页、搜索或其他列表。
     private fun showCatalog(
         load: Boolean = false,
@@ -1237,6 +1255,7 @@ class MainActivity : Activity() {
                         startupCache = cloudAccount.recommendationStartupCache(),
                     ),
                     Media3TrialPlayback(this),
+                    ::resumeShortcut,
                 )
             homeFeed = feed
             container.addView(feed, lp(-1, 0).apply { weight = 1f })

@@ -477,6 +477,106 @@ class HomeFeedScreenTest {
     }
 
     @Test
+    fun resumeShortcutShowsLatestHistoryAndLeavesTrialPaused() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val state = DramaFeedState()
+        val player = Playback(activity)
+        var opened = 0
+        val screen =
+            HomeFeedScreen(
+                activity,
+                state,
+                listOf(TextView(activity)),
+                {},
+                { _, _ -> },
+                { "账户收藏" },
+                Backend(),
+                player,
+                { ResumeShortcut("继续观看 · 测试剧 · 第 2 集 · 01:05") { opened++ } },
+            )
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            val chip = texts(screen).first { it.text == "继续观看 · 测试剧 · 第 2 集 · 01:05" }
+            assertEquals(View.VISIBLE, chip.visibility)
+            assertTrue(player.playing)
+            player.saved = 4321
+            chip.performClick()
+            assertEquals(1, opened)
+            // 和历史页一样：离开首页前先把这一屏的试播进度记下，试播也要停。
+            assertFalse(player.playing)
+            assertEquals(4321L, state.position)
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun resumeShortcutStepsAsideWhileActionsAreOpen() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val screen =
+            HomeFeedScreen(
+                activity,
+                DramaFeedState(),
+                listOf(TextView(activity)),
+                {},
+                { _, _ -> },
+                { "账户收藏" },
+                Backend(),
+                Playback(activity),
+                { ResumeShortcut("继续观看 · 测试剧 · 第 2 集 · 01:05") {} },
+            )
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            val chip = get(screen, "resumeButton") as View
+            assertEquals(View.VISIBLE, chip.visibility)
+            // 操作栏展开后右栏只剩约 300dp，这一行得让位，否则按键提示会被挤出卡片。
+            (get(screen, "stage") as View).performClick()
+            assertEquals(View.GONE, chip.visibility)
+            assertTrue(screen.back())
+            assertEquals(View.VISIBLE, chip.visibility)
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
+    fun resumeShortcutTakesNoSpaceWhenHistoryIsEmpty() {
+        val controller = Robolectric.buildActivity(Activity::class.java).setup()
+        val activity = controller.get()
+        val screen =
+            HomeFeedScreen(
+                activity,
+                DramaFeedState(),
+                listOf(TextView(activity)),
+                {},
+                { _, _ -> },
+                { "账户收藏" },
+                Backend(),
+                Playback(activity),
+            )
+        try {
+            activity.setContentView(screen)
+            screen.start(true, false)
+            pump(screen)
+            assertEquals(View.GONE, (get(screen, "resumeButton") as View).visibility)
+            // 隐藏之后不能再占着焦点：画面按「右」必须留在画面上。
+            val stage = get(screen, "stage") as View
+            assertEquals(stage.id, stage.nextFocusRightId)
+        } finally {
+            screen.close()
+            controller.pause().stop().destroy()
+        }
+    }
+
+    @Test
     fun lifecyclePauseAndTypeSwitchStopPreviousTrial() {
         val controller = Robolectric.buildActivity(Activity::class.java).setup()
         val activity = controller.get()
