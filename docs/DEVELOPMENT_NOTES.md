@@ -491,3 +491,24 @@ Rokid Station 是 Android TV 盒子（Amlogic S905Y4、2GB RAM、1920x1080@240dp
 * 模拟器（hgtv-tv AVD）实跑：设置页多出「画面输出」与「播放诊断」两行，切换后
   `playback-compat-v1.xml` 落盘 `textureView=true`，诊断弹窗显示设备/输出/记录数。
 * 真机效果无法在本机验证：花屏是否消失、1080P 是否还会崩，只能在 Rokid Station 上实测。
+
+## 整集只有 bytevc2 档位时补一次兼容模型（2026-11-05）
+
+另一条开发线（`wuzuo/hongguoTV` 的 issue #56）实测：`fallback_api` 返回的 `video_list` 若
+全部是 `bytevc2`/`bvc2`，原来会被整档过滤掉，客户端只剩「没有电视可播放的清晰度」，某些剧集
+（如《我在古代造酒竟成了国师3D版第十二季》第 71、72 集）完全打不开。官方播放器里有
+`force_codec` 与 `codec_type=0` 的兼容分支，对照测试用 `codec_type=0` + `force_codec=h264`
+能把供给换成 `hvc1`（1254×720）。
+
+本轮只移植这一处兼容请求，条件收得很窄：仅当 `fallback` 的 `video_list` 非空、每条都有
+`main_url` 且编码全是 `bytevc2`/`bvc2` 时，才在原地址上追加这两个参数再读一次模型。
+已有可用档位、编码未知、格式异常都不触发；不循环尝试，不改接口、设备身份与解密流程；
+换成什么都仍按实际 `codec_type` 过滤、按设备能力选档。参数名不代表返回内容，因此不假设
+一定拿到 H.264。
+
+回归：`allByteVc2SourceReadsOneCompatibleModel`（先全 bytevc2、兼容请求回 `bytevc1`，
+断言请求序列 `[null, "h264"]` 且最终选到该档）、`playableSourceDoesNotReadTheCompatibleModel`
+（有可用档位时只读一次模型）。原 `entirelyIncompatibleSourceFailsBeforeStartingAudio`
+仍成立：兼容请求再拿到全 bytevc2 时照旧报错，不会退化成只播音频。
+
+未验证：本机出口不能判断真实播放效果，改动是否覆盖到具体剧集需要在电视端实测。

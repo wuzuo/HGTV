@@ -436,26 +436,23 @@ class ContentRepositoryTest {
         assertEquals(1, calls)
     }
 
+    private fun videoListJson(vararg variants: Triple<Int, String, String>): String {
+        val rows = JSONObject()
+        variants.forEachIndexed { index, (height, codec, url) ->
+            rows.put(
+                "video_$index",
+                JSONObject().put("vheight", height).put("codec_type", codec).put("main_url", url),
+            )
+        }
+        return JSONObject()
+            .put("video_info", JSONObject().put("data", JSONObject().put("video_list", rows)))
+            .toString()
+    }
+
     private fun streamRepository(vararg variants: Triple<Int, String, String>) =
         repository { request ->
-            if (request.url.host == "example.com") {
-                val rows = JSONObject()
-                variants.forEachIndexed { index, (height, codec, url) ->
-                    rows.put(
-                        "video_$index",
-                        JSONObject()
-                            .put("vheight", height)
-                            .put("codec_type", codec)
-                            .put("main_url", url),
-                    )
-                }
-                JSONObject()
-                    .put(
-                        "video_info",
-                        JSONObject().put("data", JSONObject().put("video_list", rows)),
-                    )
-                    .toString()
-            } else
+            if (request.url.host == "example.com") videoListJson(*variants)
+            else
                 """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
         }
 
@@ -490,6 +487,40 @@ class ContentRepositoryTest {
                 Triple(480, "bvc2", "https://example.com/unsupported2"),
             )
         assertThrows(IOException::class.java) { repo.stream("123", 720) }
+    }
+
+    @Test
+    fun allByteVc2SourceReadsOneCompatibleModel() {
+        val reads = mutableListOf<String?>()
+        val repo =
+            repository { request ->
+                if (request.url.host == "example.com") {
+                    reads += request.url.queryParameter("force_codec")
+                    if (request.url.queryParameter("force_codec") == "h264")
+                        videoListJson(Triple(720, "bytevc1", "https://example.com/hevc"))
+                    else videoListJson(Triple(1080, "bytevc2", "https://example.com/unsupported"))
+                } else
+                    """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+            }
+        val result = repo.stream("123", 1080)
+        // 整集只有 bytevc2 时补一次兼容模型请求，选档仍按实际返回的编码来。
+        assertEquals(listOf(null, "h264"), reads)
+        assertEquals("https://example.com/hevc", result.url)
+    }
+
+    @Test
+    fun playableSourceDoesNotReadTheCompatibleModel() {
+        var reads = 0
+        val repo =
+            repository { request ->
+                if (request.url.host == "example.com") {
+                    reads++
+                    videoListJson(Triple(1080, "bytevc1", "https://example.com/hevc"))
+                } else
+                    """{"data":{"123":{"video_model":{"fallback_api":"https://example.com/stream"}}}}"""
+            }
+        assertEquals("https://example.com/hevc", repo.stream("123", 1080).url)
+        assertEquals(1, reads)
     }
 
     @Test
