@@ -809,3 +809,55 @@ Abort message: '0e55a000-0e55c000 r--p 00000000 fd:05 836 /system/bin/app_proces
 
 所以「装完马上用最不稳、放一夜充电后明显变稳」符合系统行为，不是错觉。
 我们自己发版也走 PackageInstaller，同样要等 bg-dexopt。
+
+## Rokid Station（RES101）的 root 与换 GC 可行性（11-06 11:00 实测）
+
+### 软件层：基本锁死
+
+| 检查项 | 实测值 | 含义 |
+|---|---|---|
+| `ro.build.type` | `user` | 非 userdebug，`adb root` 不可用 |
+| `ro.debuggable` | `0` | 同上，`wrap.*` 也不生效 |
+| `ro.secure` / `ro.adb.secure` | `1` / `1` | adbd 以 shell 身份运行 |
+| `su` / setuid 程序 | 全无（`/system/bin`、`/vendor/bin`、`/system/xbin` 扫过） | 无现成提权入口 |
+| `ro.boot.vbmeta.device_state` | `locked` | AVB 1.1 锁定 |
+| `ro.boot.verifiedbootstate` | `green` | 完整验证链 |
+| `ro.boot.veritymode` | `enforcing` | dm-verity 开着 |
+| `fastbootd` | `/vendor/etc/init`、`/system/etc/init` 里无定义 | 没有标准 fastboot 通道 |
+| `androidboot.force_normal_boot` | `1` | U-Boot 强制正常启动，堵掉 `reboot update` 一类入口 |
+| `persist.sys.disable_rescue` | `true` | 没有 Rescue Party，刷坏不会自动回滚 |
+
+### 硬件层：还有口子
+
+- `ro.boot.secureboot` **为空**，`androidboot.rpmb_state=0x0` → Amlogic SecureBoot 未启用
+- `otg_device=1` → USB Burning 路径存在
+- `console=ttyS0,921600` → 有 UART，可拿 U-Boot 交互
+- `CONFIG_MODULES=y` 且 `CONFIG_MODULE_SIG` **未设置** → 内核不验模块签名
+- `androidboot.selinux=permissive` → SELinux 不拦
+
+也就是说唯一现实路径是「拆机短接 eMMC / 按键进 burn mode + USB Burning Tool + 对应固件包」，
+需要 Rokid 不公开的固件，刷错即砖（且没有 Rescue Party 兜底）。软件层没有可用入口。
+
+### 关键结论：拿到 root 也治不了崩溃
+
+`dalvik.vm.gc` 属性意外可写（shell 用户 `setprop` 返回 0，正常 Android 不允许），
+于是试了换掉 ConcurrentCopying：
+
+```
+setprop dalvik.vm.gc cms
+setprop ctl.restart zygote      # 返回 0，zygote 真的重启了（pid 变化），系统正常启动
+```
+
+结果 **CMS 被静默忽略**，应用进程日志仍是 `Background concurrent copying GC`。
+随后直接扫 `libart.so` 里的收集器名字：
+
+```
+concurrent=20   mark_compact=0   marksweepcompact=0   semispace=1   cms=0   marksweep=0
+```
+
+**这台设备的 ART 只编译了 ConcurrentCopying 一种 GC。** Android 10+ 本就移除了 CMS，
+ROM 也没保留 mark-compact。所以「换个 GC 绕开 `ConcurrentCopying::Copy` 崩溃点」在
+当前 ROM 上无解 —— 只有换 ROM 才行，而 Rokid 没有第三方 ROM。
+
+结论：为消除崩溃去 root 没有收益。要 root 只对「读历史 tombstone / 冻结系统应用省内存」
+这类事情有用。实验做完已把 `dalvik.vm.gc` 清空，zygote 仍在跑（CC，即默认）。
