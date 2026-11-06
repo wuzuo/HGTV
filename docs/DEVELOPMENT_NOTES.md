@@ -727,3 +727,27 @@ core 254 项、app 全量通过；仅剩既有的 Windows 原子重命名失败�
 
 未验证：真机播放。本机签不了名，只能走 CI 出 0.1.24 的包再验——重点看 GC 频率是否从
 每秒 1–2 次降到偶发，以及连续切集是否还崩。
+
+### 0.1.24 装机后的一次例外
+
+装完 0.1.24 播到第 70 秒崩了一次，崩点换到了 ART 的 JIT 编译线程：
+
+```
+#00 art::CodeGenerator::Compile(art::CodeAllocator*)+472
+#01 art::OptimizingCompiler::TryCompile(...)
+#05 art::jit::JitCompileTask::Run(...)
+signal 11, fault addr 0xc, r0 = 0
+```
+
+也就是说 GC 压力消失后（实测纯播放 30 秒 0 次 GC），运行时又在编译代码时空指针崩了。
+`dumpsys package` 的 Compiler stats 是空的 —— 用 `adb install` 装的包没有做 AOT，
+所有代码都靠 JIT 现编，JIT 压力最大。
+
+判断：这是这台设备 ART 自身的问题，不是应用代码。同日旁证：`app_process` 在
+`BootImageLoader::LoadImage` 空指针崩了 3 次（系统进程，与我们无关）、`esdserver` 崩了 3 次；
+四次崩溃点（GC 标记、异常构造、JIT 编译、启动镜像加载）互不相同，且都是「分配失败没检查
+就解引用」的形态。设备 2GB 内存、`free` 只剩 334MB、swap 已用 315MB。
+
+缓解方向（尚未实现）：
+1. 把播放进度改成播放中定期落盘，进程被杀最多丢几秒，首页「继续观看」一键接回。
+2. 试 `cmd package compile -m speed -f` 做 AOT，验证是否只在 JIT 路径上崩。
