@@ -669,3 +669,61 @@ Windows 原子重命名失败。
 未验证：花屏本身（只能人眼看）；15 次崩溃的 tombstone 依旧拿不到（user 构建，`/data/tombstones`
 不可读、dropbox 已清），设备上留了 `/sdcard/hgtv-crash.log` 与 `/sdcard/hgtv-main.log` 两个落盘
 采集（重启后采集进程会消失，需要重新起）。
+
+## 播放时 GC 过密导致 native 崩溃（2026-11-06）
+
+### 怎么抓到栈的
+
+user 构建读不到 `/data/tombstones`，但 `dumpsys dropbox --print <日期> <时间> SYSTEM_TOMBSTONE`
+能打印完整墓碑（含 backtrace、寄存器、fault addr）。dropbox 只留最近几条，所以现场必须当场取：
+设备上常驻 `scripts/device-tombstone-crawler.sh`（写进 `/sdcard/hgtv-tombstones.txt`）就不用手守。
+
+另一个坑：`dumpsys activity exit-info <包名>` 会漏条目，必须全量拉取后按 `process=` 过滤。
+
+### 现场
+
+《莞城往事》1080P + 硬件叠加，0.1.23，连续切集一分钟内复现，共三次：
+
+- `ExoPlayer:Loade` → `ThrowClassCastException` → `Class::GetDescriptor` 空指针
+- `HeapTaskDaemon` → `ConcurrentCopying::MarkingPhase` → `VisitReferences` 空指针（`fault addr 0x44`）
+- 第三次与第二次 PC 完全相同
+
+单集静置播放 60 秒不崩，只有「切集」这个动作能稳定触发。三次 pss 71–88MB，不是 OOM。
+后两次落在同一地址，说明是确定性路径；第一次的 ClassCastException 是 GC 搬对象时 JIT 读到旧指针
+的连带现象——三种崩点都在 ART 内部，不在解码器、不在渲染面。
+
+### 根因
+
+GC 日志（`logcat | grep "concurrent copying GC"`）显示播放时每秒 1–2 次、单次回收
+14–20 万个对象（5–9MB）、暂停 126–380ms。三成以上 CPU 时间在 GC。
+
+垃圾来自解密链路，每次 32KiB 读取约 430KB：
+
+- `MediaCrypto.decrypt` 先 `data.copyOf()`，每个 sample 再 `copyOfRange` 一次
+- CTR 非对齐用 `ByteArray(skip) + 明文` 拼接，再整段 `copyInto` 回去
+- 每个 sample 一次 `Cipher.getInstance`（这是最大头，`getInstance` 比 `doFinal` 贵得多）、
+  一次 `BigInteger` 计数器、两个新数组
+
+### 改动
+
+1. `MediaCrypto.decryptInto(source, sourceOffset, length, start, key, prepared, target, targetOffset)`：
+   解密结果直接写进调用方缓冲区，`source` 保持原样（加密数据要原封不动地当 keystream 的输入），
+   header 只覆盖重叠的那一段。`decrypt()` 退化为分配一次目标的薄封装。
+2. CTR 计数器改成 16 字节大端整型加法，同样按 2^128 取模；Cipher 与 IV/滑槽缓冲按线程复用。
+3. 跨块 `skip` 用「先烧掉 keystream 前 skip 字节」代替补零拼接（与 media3 `AesFlushingCipher`
+   的做法一致）。Android 的 Conscrypt 对 CTR/NoPadding 的 `update` 是流式的，返回长度等于输入长度。
+4. `RemoteVideo.readInto` 直达缓冲区；`read` 变成薄封装；`openRead` 去掉 `scratch.copyOf(n)`。
+5. `VideoDataSource.read` 走 `readInto`。
+
+实测（JVM，52 个 sample / 32KiB 读取）：439344 → 5880 字节。
+
+### 验证
+
+`decryptInto` 与旧实现逐字节等价，新增三组用例：所有非对齐窗口（目标缓冲带守卫字节，确认只写
+请求范围）、子样本 `encryptedOffset` + 计数器回绕（IV 全 `0xff`）、4096 字节多样本扫描。
+`readInto` 与 `read` 等价，覆盖缓存前缀跨界。
+
+core 254 项、app 全量通过；仅剩既有的 Windows 原子重命名失败（本机 `File.renameTo` 不能覆盖）。
+
+未验证：真机播放。本机签不了名，只能走 CI 出 0.1.24 的包再验——重点看 GC 频率是否从
+每秒 1–2 次降到偶发，以及连续切集是否还崩。
