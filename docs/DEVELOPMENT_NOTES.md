@@ -751,3 +751,61 @@ signal 11, fault addr 0xc, r0 = 0
 缓解方向（尚未实现）：
 1. 把播放进度改成播放中定期落盘，进程被杀最多丢几秒，首页「继续观看」一键接回。
 2. 试 `cmd package compile -m speed -f` 做 AOT，验证是否只在 JIT 路径上崩。
+
+### 0.1.24 + AOT 对照实验（11-06 10:30 之后）
+
+设备侧执行 `cmd package compile -m speed -f io.github.wuzuo.hgtv`，`Compiler stats` 从空白变成
+`base.apk - 6203`（6203 个方法已 AOT）。同样的连续切集压测：
+
+| 条件 | 结果 |
+|---|---|
+| 未 AOT（0.1.24 刚装） | 70 秒内崩 1 次，崩在 `CodeGenerator::Compile`（JIT 编译线程） |
+| 已 AOT | 慢速 20 轮（每轮 7s）全过；快速 6 轮（每轮 4s）后崩，共撑 6 分钟 / 26 次切集 |
+| 纯播放 30 秒 GC 次数 | 0（改零分配前是每秒 1–2 次） |
+
+也就是说 AOT 把存活时间从 70 秒拉到 6 分钟，方向对，但**没有根治**。
+
+### 这次崩溃的性质变了
+
+已 AOT 后这次是 SIGABRT，栈顶是 ART 主动报错而不是踩空：
+
+```
+art::gc::Verification::LogHeapCorruption(...)
+art::gc::collector::ConcurrentCopying::Copy(...)
+art::gc::collector::ConcurrentCopying::Process<true>(...)
+art::mirror::Object::VisitReferences<true, ...>(...)
+Abort message: '0e55a000-0e55c000 r--p 00000000 fd:05 836 /system/bin/app_process32'
+```
+
+`LogHeapCorruption` 是 ART 的 GC 校验开关：复制对象时发现某个引用字段指向的地址
+不是合法对象指针（这里是 `app_process32` 的只读代码段），判定堆已被写坏，主动 abort。
+和 11-06 09:44、09:46 两次 SIGSEGV 落在同一函数（`VisitReferences`）是同一路径 ——
+前两次是校验逻辑自己踩空崩掉，这次校验跑通了、把原因报了出来。
+
+### 可以排除的方向
+
+- **不是 OOM**：`dumpsys meminfo <pid>` 实测 Dalvik Heap size 10MB / alloc 5MB，
+  `heapgrowthlimit` 是 256MB，PSS 65MB（Native 11MB + GL 11.5MB + Java 20MB）。离上限很远。
+- **不是我们的 JNI**：项目里没有 `external fun` / `System.loadLibrary`。
+- **不是解码器**：视频解码跑在 `OMX_AmlogicPeerBufferWrapper`，收帧正常，且崩点线程是
+  `HeapTaskDaemon`（GC 守护线程），和播放线程无关。
+- **不是单一确定路径**：AOT 前后各崩一次，加上 11-04 那批，崩点已覆盖
+  JIT 编译、GC 标记、GC 复制校验、异常构造、启动镜像加载五个互不相同的位置。
+
+### 结论
+
+这台 Rokid Station（RES101 / Android 11 / arm32）的 ART 在高负载下会写坏 Java 堆。
+旁证是同日 `app_process` 在 `ImageSpace::BootImageLoader::LoadImage` 空指针崩了多次
+（系统进程，与我们无关，`fault addr 0x44` 与我们的 GC 崩溃地址相同），
+以及 `esdserver` 反复崩。应用侧只能降低触发概率，不能修。
+
+已做过的降载措施（都保留）：解密链路零分配、播放失败自动恢复、进度 5 秒落盘 + 切集前 flush。
+
+### 一个对用户有用的发现
+
+设备出厂策略 `pm.dexopt.install = speed-profile`、`pm.dexopt.bg-dexopt = speed-profile`，
+即正常安装本该 AOT。但 `adb install` 装的包 `Compiler stats` 是空的 —— 装的时候跳过了 dexopt，
+全靠 JIT，这是最容易崩的状态。系统会在空闲 + 充电时由 bg-dexopt 补上。
+
+所以「装完马上用最不稳、放一夜充电后明显变稳」符合系统行为，不是错觉。
+我们自己发版也走 PackageInstaller，同样要等 bg-dexopt。
