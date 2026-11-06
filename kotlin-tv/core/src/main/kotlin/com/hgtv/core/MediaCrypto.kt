@@ -246,7 +246,8 @@ object MediaCrypto {
      * alignment slack and once for the AES output. On the 32-bit TV that produced tens of MB of
      * garbage per minute and made the concurrent GC run for a third of the CPU time.
      *
-     * [source] and [target] must be distinct arrays; [source] keeps the ciphertext untouched.
+     * [source] keeps the ciphertext untouched — the CTR stream reads from it while [target] is
+     * being written, so the two must not overlap unless they are the same array at the same offset.
      */
     fun decryptInto(
         source: ByteArray,
