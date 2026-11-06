@@ -40,13 +40,12 @@ class VideoDataSource(private val video: RemoteVideo) : BaseDataSource(true) {
         val cached = if (reader == null) video.cachedBytes(position) else 0
         val count =
             if (cached > 0) {
-                val bytes =
-                    video.read(
-                        position,
-                        minOf(length.toLong(), cached.toLong(), remaining, 32 * 1024L).toInt(),
-                    )
-                bytes.copyInto(target, targetOffset)
-                bytes.size
+                video.readInto(
+                    position,
+                    minOf(length.toLong(), cached.toLong(), remaining, 32 * 1024L).toInt(),
+                    target,
+                    targetOffset,
+                )
             } else {
                 if (reader == null) {
                     rangeRemaining = minOf(512 * 1024L, remaining).toInt()

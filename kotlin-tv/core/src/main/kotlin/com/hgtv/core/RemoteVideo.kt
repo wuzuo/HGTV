@@ -115,9 +115,9 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
                 private var remaining = size
                 private var readerClosed = false
                 private val scratch = ByteArray(32 * 1024)
+                private val single = ByteArray(1)
 
                 override fun read(): Int {
-                    val single = ByteArray(1)
                     return if (read(single, 0, 1) < 0) -1 else single[0].toInt() and 255
                 }
 
@@ -128,8 +128,7 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
                     if (remaining == 0) return -1
                     val n = input.read(scratch, 0, minOf(count, remaining, scratch.size))
                     if (n < 0) throw java.io.EOFException("视频分段意外结束")
-                    MediaCrypto.decrypt(scratch.copyOf(n), position, info.key, prepared)
-                        .copyInto(target, offset)
+                    MediaCrypto.decryptInto(scratch, 0, n, position, info.key, prepared, target, offset)
                     position += n
                     remaining -= n
                     return n
@@ -187,17 +186,44 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
 
     fun read(start: Long, length: Int): ByteArray {
         require(length in 1..1024 * 1024 && start >= 0)
+        val buffer = ByteArray(length)
+        val n = readInto(start, length, buffer, 0)
+        return if (n == length) buffer else buffer.copyOf(n)
+    }
+
+    /**
+     * Writes up to [length] decoded bytes at [start] into [target]. Returns the count written, zero
+     * when [start] is already past the end. Allocation-free unless the request straddles the cached
+     * prefix, which happens once per stream instead of once per read.
+     */
+    fun readInto(start: Long, length: Int, target: ByteArray, targetOffset: Int): Int {
+        require(length in 1..1024 * 1024 && start >= 0)
+        require(targetOffset >= 0 && targetOffset <= target.size - length)
         if (closed) throw IOException("播放请求已取消")
-        if (start >= total) return byteArrayOf()
+        if (start >= total) return 0
         val cached = prefix
         val end = minOf(total, start + length)
         val available = (minOf(end, cached.size.toLong()) - start).coerceAtLeast(0).toInt()
-        val first =
-            if (available > 0) cached.copyOfRange(start.toInt(), start.toInt() + available)
-            else byteArrayOf()
+        if (start + available >= end) {
+            MediaCrypto.decryptInto(
+                cached,
+                start.toInt(),
+                available,
+                start,
+                info.key,
+                prepared,
+                target,
+                targetOffset,
+            )
+            return available
+        }
         val raw =
-            if (start + available < end) first + range(start + available, end - 1).bytes else first
-        return MediaCrypto.decrypt(raw, start, info.key, prepared)
+            if (available > 0)
+                cached.copyOfRange(start.toInt(), start.toInt() + available) +
+                    range(start + available, end - 1).bytes
+            else range(start, end - 1).bytes
+        MediaCrypto.decryptInto(raw, 0, raw.size, start, info.key, prepared, target, targetOffset)
+        return raw.size
     }
 
     /**

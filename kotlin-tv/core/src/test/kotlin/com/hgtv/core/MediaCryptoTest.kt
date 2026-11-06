@@ -58,6 +58,96 @@ class MediaCryptoTest {
         )
     }
 
+    /** Byte-for-byte restatement of the allocation-heavy implementation this replaced. */
+    private fun reference(
+        window: ByteArray,
+        start: Long,
+        key: ByteArray,
+        prepared: MediaCrypto.Prepared,
+    ): ByteArray {
+        val result = window.copyOf()
+        val end = start + window.size
+        if (start < prepared.header.size)
+            prepared.header.copyInto(
+                result,
+                0,
+                start.toInt(),
+                minOf(end, prepared.header.size.toLong()).toInt(),
+            )
+        for (sample in prepared.samples) {
+            if (sample.end <= start || sample.start >= end) continue
+            val begin = maxOf(start, sample.start)
+            val stop = minOf(end, sample.end)
+            if (begin >= stop) continue
+            val relative = begin - sample.start + sample.encryptedOffset
+            val skip = (relative % 16).toInt()
+            val counter =
+                (java.math.BigInteger(1, sample.iv) + java.math.BigInteger.valueOf(relative / 16))
+                    .and(java.math.BigInteger.ONE.shiftLeft(128) - java.math.BigInteger.ONE)
+                    .toByteArray()
+            val iv = ByteArray(16)
+            counter.copyInto(
+                iv,
+                maxOf(0, 16 - counter.size),
+                maxOf(0, counter.size - 16),
+                counter.size,
+            )
+            val decrypted =
+                aes(
+                    "CTR",
+                    key,
+                    iv,
+                    ByteArray(skip) +
+                        result.copyOfRange((begin - start).toInt(), (stop - start).toInt()),
+                )
+            decrypted.copyInto(result, (begin - start).toInt(), skip)
+        }
+        return result
+    }
+
+    @Test
+    fun decryptIntoWritesExactlyTheRequestedWindowIntoTheExistingBuffer() {
+        val prefix = ByteArray(23) { 0x66 }
+        val source = prefix + encrypted + ByteArray(12) { 0x77 }
+        val prepared = MediaCrypto.Prepared(byteArrayOf(), listOf(MediaCrypto.Sample(23, 87, iv)))
+        for (start in source.indices) for (length in 1..minOf(29, source.size - start)) {
+            val expected = ByteArray(length + 8) { 0x5a }
+            reference(source.copyOfRange(start, start + length), start.toLong(), key, prepared)
+                .copyInto(expected, 4)
+            val actual = ByteArray(length + 8) { 0x5a }
+            MediaCrypto.decryptInto(source, start, length, start.toLong(), key, prepared, actual, 4)
+            assertArrayEquals("$start+$length", expected, actual)
+        }
+    }
+
+    @Test
+    fun decryptIntoMatchesReferenceOverManySamplesAndCounterWrap() {
+        val raw = ByteArray(4096) { ((it * 37 + 11) and 0xff).toByte() }
+        val header = ByteArray(64) { 0x11 }
+        val samples = mutableListOf<MediaCrypto.Sample>()
+        var at = 64L
+        var index = 0
+        while (at + 100 <= raw.size) {
+            // Every sample gets a counter that overflows the low bytes sooner or later.
+            val sampleIv = ByteArray(16) { if (index % 3 == 0) 0xff.toByte() else maxOf(0, 200 - index).toByte() }
+            samples += MediaCrypto.Sample(at, at + 100, sampleIv, if (index % 5 == 0) 7 else 0)
+            at += 100
+            index++
+        }
+        val prepared = MediaCrypto.Prepared(header, samples)
+        for (start in 0 until raw.size step 13) {
+            for (length in intArrayOf(1, 15, 16, 17, 101, 512, 1024)) {
+                if (start + length > raw.size) continue
+                val expected = ByteArray(length + 32) { 0x5a }
+                reference(raw.copyOfRange(start, start + length), start.toLong(), key, prepared)
+                    .copyInto(expected, 16)
+                val buffer = ByteArray(length + 32) { 0x5a }
+                MediaCrypto.decryptInto(raw, start, length, start.toLong(), key, prepared, buffer, 16)
+                assertArrayEquals("$start+$length", expected, buffer)
+            }
+        }
+    }
+
     private fun box(type: String, body: ByteArray) = be32(body.size + 8) + type.toByteArray() + body
 
     private fun fixture(codec: String = "avc1", auxSize: Int = 8): ByteArray {

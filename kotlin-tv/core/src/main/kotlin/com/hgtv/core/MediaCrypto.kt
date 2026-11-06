@@ -2,7 +2,9 @@
 package com.hgtv.core
 
 import java.io.IOException
-import java.math.BigInteger
+import javax.crypto.Cipher
+import javax.crypto.spec.IvParameterSpec
+import javax.crypto.spec.SecretKeySpec
 
 object MediaCrypto {
     data class Sample(
@@ -231,17 +233,43 @@ object MediaCrypto {
     }
 
     fun decrypt(data: ByteArray, start: Long, key: ByteArray?, prepared: Prepared): ByteArray {
-        require(start >= 0)
-        val result = data.copyOf()
-        val end = start + data.size
-        if (start < prepared.header.size)
-            prepared.header.copyInto(
-                result,
-                0,
-                start.toInt(),
-                minOf(end, prepared.header.size.toLong()).toInt(),
-            )
-        if (key == null) return result
+        val result = ByteArray(data.size)
+        decryptInto(data, 0, data.size, start, key, prepared, result, 0)
+        return result
+    }
+
+    /**
+     * Decrypts [length] raw bytes taken from [source] at [start] in place into [target].
+     *
+     * Playback reads arrive every few kilobytes, so this path must not allocate: the previous
+     * implementation copied the whole range once for the header overlay, once to prepend the CTR
+     * alignment slack and once for the AES output. On the 32-bit TV that produced tens of MB of
+     * garbage per minute and made the concurrent GC run for a third of the CPU time.
+     *
+     * [source] and [target] must be distinct arrays; [source] keeps the ciphertext untouched.
+     */
+    fun decryptInto(
+        source: ByteArray,
+        sourceOffset: Int,
+        length: Int,
+        start: Long,
+        key: ByteArray?,
+        prepared: Prepared,
+        target: ByteArray,
+        targetOffset: Int,
+    ) {
+        require(start >= 0 && length >= 0)
+        require(sourceOffset >= 0 && sourceOffset <= source.size - length) { "视频数据越界" }
+        require(targetOffset >= 0 && targetOffset <= target.size - length) { "视频缓冲区越界" }
+        if (target !== source || targetOffset != sourceOffset)
+            System.arraycopy(source, sourceOffset, target, targetOffset, length)
+        if (length == 0) return
+        val end = start + length
+        if (start < prepared.header.size) {
+            val n = minOf(length.toLong(), prepared.header.size - start).toInt()
+            if (n > 0) System.arraycopy(prepared.header, start.toInt(), target, targetOffset, n)
+        }
+        if (key == null) return
         val samples = prepared.samples
         var low = 0
         var high = samples.size
@@ -249,6 +277,8 @@ object MediaCrypto {
             val middle = (low + high) ushr 1
             if (samples[middle].end <= start) low = middle + 1 else high = middle
         }
+        if (low >= samples.size) return
+        val secret = SecretKeySpec(key, "AES")
         for (i in low until samples.size) {
             val sample = samples[i]
             if (sample.start >= end) break
@@ -256,28 +286,79 @@ object MediaCrypto {
             val stop = minOf(end, sample.end)
             if (begin >= stop) continue
             val relative = begin - sample.start + sample.encryptedOffset
-            val skip = (relative % 16).toInt()
-            val counter =
-                (BigInteger(1, sample.iv) + BigInteger.valueOf(relative / 16))
-                    .and(BigInteger.ONE.shiftLeft(128) - BigInteger.ONE)
-                    .toByteArray()
-            val iv = ByteArray(16)
-            counter.copyInto(
-                iv,
-                maxOf(0, 16 - counter.size),
-                maxOf(0, counter.size - 16),
-                counter.size,
+            ctr(
+                secret,
+                sample.iv,
+                relative / 16,
+                (relative % 16).toInt(),
+                source,
+                sourceOffset + (begin - start).toInt(),
+                target,
+                targetOffset + (begin - start).toInt(),
+                (stop - begin).toInt(),
             )
-            val decrypted =
-                aes(
-                    "CTR",
-                    key,
-                    iv,
-                    ByteArray(skip) +
-                        result.copyOfRange((begin - start).toInt(), (stop - start).toInt()),
-                )
-            decrypted.copyInto(result, (begin - start).toInt(), skip)
         }
-        return result
+    }
+
+    // One Cipher per thread: Cipher.getInstance is the expensive half of every per-sample call.
+    private val ctrCipher =
+        object : ThreadLocal<Cipher>() {
+            override fun initialValue() = Cipher.getInstance("AES/CTR/NoPadding")
+        }
+    private val ctrIv =
+        object : ThreadLocal<ByteArray>() {
+            override fun initialValue() = ByteArray(16)
+        }
+    private val ctrSlack =
+        object : ThreadLocal<ByteArray>() {
+            override fun initialValue() = ByteArray(16)
+        }
+    private val zeroBlock = ByteArray(16)
+
+    /** Advances a 128-bit big-endian counter in place; wraps modulo 2^128 like the BigInteger form. */
+    private fun advanceCounter(iv: ByteArray, base: ByteArray, blocks: Long) {
+        base.copyInto(iv, 0, 0, 16)
+        var carry = blocks
+        var at = 15
+        while (at >= 0 && carry != 0L) {
+            val sum = iv[at].u().toLong() + (carry and 0xff)
+            iv[at] = (sum and 0xff).toByte()
+            carry = (carry ushr 8) + (sum ushr 8)
+            at--
+        }
+    }
+
+    private fun ctr(
+        secret: SecretKeySpec,
+        baseIv: ByteArray,
+        blocks: Long,
+        skip: Int,
+        source: ByteArray,
+        sourceOffset: Int,
+        target: ByteArray,
+        targetOffset: Int,
+        length: Int,
+    ) {
+        val iv = ctrIv.get()
+        advanceCounter(iv, baseIv, blocks)
+        val cipher = ctrCipher.get()
+        cipher.init(Cipher.DECRYPT_MODE, secret, IvParameterSpec(iv))
+        // CTR is a keystream: burn the leading bytes of the straddled block instead of padding.
+        if (skip > 0) {
+            val slack = ctrSlack.get()
+            var burned = 0
+            while (burned < skip) {
+                val n = cipher.update(zeroBlock, 0, skip - burned, slack, 0)
+                if (n <= 0) throw IllegalStateException("视频解密器不支持分段输出")
+                burned += n
+            }
+        }
+        var done = 0
+        while (done < length) {
+            val n =
+                cipher.update(source, sourceOffset + done, length - done, target, targetOffset + done)
+            if (n <= 0) throw IllegalStateException("视频解密输出不足")
+            done += n
+        }
     }
 }

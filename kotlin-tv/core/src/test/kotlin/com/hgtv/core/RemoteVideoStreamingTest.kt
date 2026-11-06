@@ -105,6 +105,47 @@ class RemoteVideoStreamingTest {
     }
 
     @Test
+    fun readIntoFillsThePlayerBufferWithoutAnIntermediateCopy() {
+        val file = fixture(48 * 1024)
+        val http =
+            OkHttpClient.Builder()
+                .addInterceptor { chain ->
+                    val limits =
+                        chain
+                            .request()
+                            .header("Range")!!
+                            .removePrefix("bytes=")
+                            .split('-')
+                            .map(String::toInt)
+                    val end = minOf(file.lastIndex, limits[1])
+                    Response.Builder()
+                        .request(chain.request())
+                        .protocol(Protocol.HTTP_1_1)
+                        .code(206)
+                        .message("partial")
+                        .header("Content-Range", "bytes ${limits[0]}-$end/${file.size}")
+                        .body(file.copyOfRange(limits[0], end + 1).toResponseBody())
+                        .build()
+                }
+                .build()
+        RemoteVideo(http, StreamInfo("https://example.test/video", null, "测试")).use { video ->
+            video.prepare(32 * 1024)
+            assertEquals(48 * 1024, video.cachedBytes(0))
+            // Last two offsets straddle the cached prefix and must still land byte-exact.
+            for (start in listOf(0L, 1024L, 40 * 1024L, 47 * 1024L)) {
+                for (length in intArrayOf(1, 15, 4096, 8192)) {
+                    val expected = ByteArray(length + 16) { 0x5a }
+                    video.read(start, length).copyInto(expected, 8)
+                    val actual = ByteArray(length + 16) { 0x5a }
+                    assertEquals("$start+$length", length, video.readInto(start, length, actual, 8))
+                    assertArrayEquals("$start+$length", expected, actual)
+                }
+            }
+            assertEquals(0, video.readInto(file.size.toLong(), 16, ByteArray(16), 0))
+        }
+    }
+
+    @Test
     fun streamedRangesRejectChangedResourcesWrongRangesAndUnexpectedEof() {
         val file = fixture()
         var mode = "prepare"
