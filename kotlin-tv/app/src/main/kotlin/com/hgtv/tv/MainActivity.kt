@@ -293,6 +293,8 @@ class MainActivity : Activity() {
     private var currentRendition: Rendition? = null
     private var currentTiers: List<Rendition> = emptyList()
     private var autoDowngrades = 0
+    // 同一集自动重试会反复进 playerFailure，诊断只记第一次，免得刷屏把更早的记录挤掉。
+    private var playbackErrorLogged = false
     private val tick =
         object : Runnable {
             override fun run() {
@@ -716,6 +718,24 @@ class MainActivity : Activity() {
                         )
                         .show()
                 }
+            } else {
+                // 兼容档已经开着还是中断了，说明换渲染面这条路没解决。此时唯一还能自动做的
+                // 是把这套「编码 + 尺寸」记成解不了，下次选档直接避开它——否则每次都会
+                // 拿同一套组合再撞一遍，用户只能反复重启。解析不出来就只提示，不猜。
+                val failed = PlaybackDiagnostics.interruptedCodec(detail)
+                val learned =
+                    failed != null && CodecCapabilities.learnFailure(failed.codec, failed.width, failed.height)
+                root.post {
+                    Toast.makeText(
+                            this,
+                            if (failed != null)
+                                "上次在兼容模式下仍异常中断，已记录这套解码格式（${failed.codec} ${failed.width}x${failed.height}），下次优先尝试更低清晰度"
+                            else "上次在兼容模式下仍异常中断；如果反复出现，可在设置里换一档清晰度",
+                            Toast.LENGTH_LONG,
+                        )
+                        .show()
+                }
+                android.util.Log.w("HGTV", "Compat render still interrupted; learned=$learned")
             }
         }
         cloudAccount =
@@ -3462,7 +3482,10 @@ class MainActivity : Activity() {
         video = prefetched
         var firstReady = true
         var firstFrame = true
-        if (!recovering) recovery.reset()
+        if (!recovering) {
+            recovery.reset()
+            playbackErrorLogged = false
+        }
         autoRecovery = false
         readySince = 0
         startPosition = position.coerceAtLeast(0)
@@ -4198,8 +4221,22 @@ class MainActivity : Activity() {
         val retryable =
             if (problem is PlaybackException)
                 problem.errorCode in 2000..2999 ||
-                    problem.errorCode == PlaybackException.ERROR_CODE_TIMEOUT
+                    problem.errorCode == PlaybackException.ERROR_CODE_TIMEOUT ||
+                    // 实测：连续快进/快退后解码器会抛 ERROR_CODE_UNSPECIFIED，进程没事、
+                    // 立刻重试就能恢复。原来这类错误只能弹面板等用户手点，现在按可重试
+                    // 处理，走同一套退避重试；三次都不行仍然会露出面板。
+                    problem.errorCode == PlaybackException.ERROR_CODE_UNSPECIFIED
             else problem is java.io.IOException
+        if (!playbackErrorLogged) {
+            playbackErrorLogged = true
+            PlaybackDiagnostics.notePlaybackError(
+                this,
+                "ep=${episodeIndex + 1} quality=$quality" +
+                    " codec=${currentTrack?.fourcc ?: currentRendition?.codec ?: "?"}" +
+                    " size=${currentTrack?.width}x${currentTrack?.height}" +
+                    " render=${PlaybackCompat.label()} · $lastPlaybackFailure",
+            )
+        }
         playbackText.text = if (decoding) "电视无法解码当前视频，可尝试更低清晰度。" else "$lastPlaybackFailure · 可手动重试"
         val actions = row()
         controls.addView(actions)

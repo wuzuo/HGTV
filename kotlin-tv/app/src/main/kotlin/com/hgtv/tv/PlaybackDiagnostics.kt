@@ -4,6 +4,7 @@ package com.hgtv.tv
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
+import android.os.SystemClock
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -27,6 +28,9 @@ object PlaybackDiagnostics {
     private const val REPORT = "playback-diag.txt"
     private const val ACTIVE = "playback-active.txt"
     private const val LIMIT = 16 * 1024
+
+    private val CODEC = Regex("""codec=([A-Za-z0-9_]+)""")
+    private val SIZE = Regex("""size=(\d+)x(\d+)""")
 
     private fun reportFile(context: Context) = File(context.applicationContext.filesDir, REPORT)
     private fun activeFile(context: Context) = File(context.applicationContext.filesDir, ACTIVE)
@@ -67,9 +71,56 @@ object PlaybackDiagnostics {
 
     fun beginPlayback(context: Context, detail: String) {
         runCatching {
-            activeFile(context).writeText("${stamp()} $detail")
+            activeFile(context).writeText("${stamp()} $detail ${snapshot(context)}")
         }
     }
+
+    /**
+     * 崩溃当时的内存与运行时长。
+     *
+     * 同一条「异常中断」既可能是解码器原生崩溃，也可能是播放中被系统回收——两者的处置完全
+     * 不同（前者要降档/换渲染面，后者要降缓冲），光看清晰度和编码分不出来，所以把内存压力
+     * 和开机时长一起留下。
+     */
+    private fun snapshot(context: Context): String {
+        val manager = context.getSystemService(ActivityManager::class.java)
+        val info = ActivityManager.MemoryInfo()
+        runCatching { manager?.getMemoryInfo(info) }
+        val runtime = Runtime.getRuntime()
+        val used = (runtime.totalMemory() - runtime.freeMemory()) / (1024 * 1024)
+        val max = runtime.maxMemory() / (1024 * 1024)
+        return "avail=${info.availMem / (1024 * 1024)}MB" +
+            " low=${info.lowMemory}" +
+            " heap=$used/$max" +
+            " uptime=${SystemClock.elapsedRealtime() / 1000}s"
+    }
+
+    /**
+     * 记录一次「播放器报错但没崩」。
+     *
+     * 这类错误（例如 `ERROR_CODE_UNSPECIFIED`）本身就说明解码链路出了问题，但进程活下来了，
+     * 标记文件不会被触发；不记一笔的话，用户反馈「卡住/黑屏」时手上什么都没有。
+     */
+    fun notePlaybackError(context: Context, line: String) {
+        append(context, "播放器报错 ${stamp()} $line")
+    }
+
+    /**
+     * 从标记文本里取出可以直接用于「记住这套解码组合」的编码与尺寸。
+     *
+     * 标记是给人看的单行文本，这里只做最小限度的解析：取不到就返回 null，绝不猜。
+     */
+    internal fun interruptedCodec(detail: String): InterruptedCodec? {
+        val codec = CODEC.find(detail)?.groupValues?.getOrNull(1)?.trim().orEmpty()
+        if (codec.isEmpty() || codec == "?") return null
+        val size = SIZE.find(detail) ?: return null
+        val width = size.groupValues[1].toIntOrNull() ?: return null
+        val height = size.groupValues[2].toIntOrNull() ?: return null
+        if (width <= 0 || height <= 0) return null
+        return InterruptedCodec(codec, width, height)
+    }
+
+    internal data class InterruptedCodec(val codec: String, val width: Int, val height: Int)
 
     fun endPlayback(context: Context) {
         runCatching { activeFile(context).delete() }
@@ -93,6 +144,9 @@ object PlaybackDiagnostics {
             appendLine("设备：${deviceLine(context)}")
             appendLine("画面输出：${PlaybackCompat.label()}")
             appendLine("已学到的解码器失败记录：${CodecCapabilities.learnedCount()} 条")
+            // 0 条很容易被误解成「从没出过问题」：原生崩溃直接把进程带走，Media3 的
+            // 解码器错误回调根本不会执行，所以那一类只能看下面的「异常中断」。
+            appendLine("（系统直接终止进程的原生崩溃收不到回调，不计入条数，看下方异常中断）")
             appendLine()
             if (body.isEmpty()) {
                 append("还没有异常记录。")

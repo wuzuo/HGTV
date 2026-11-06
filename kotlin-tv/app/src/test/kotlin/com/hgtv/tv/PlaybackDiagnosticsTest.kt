@@ -45,7 +45,8 @@ class PlaybackDiagnosticsTest {
         PlaybackDiagnostics.beginPlayback(context, "ep=1 720P codec=h264")
         PlaybackDiagnostics.endPlayback(context)
         assertNull(PlaybackDiagnostics.noteStartup(context))
-        assertFalse(PlaybackDiagnostics.report(context).contains("异常中断"))
+        // 只认「补记」那条记录本身：报告头部的说明文字里也带着「异常中断」四个字。
+        assertFalse(PlaybackDiagnostics.report(context).contains("上次播放中"))
     }
 
     @Test
@@ -87,5 +88,50 @@ class PlaybackDiagnosticsTest {
             android.view.LayoutInflater.from(context)
                 .inflate(R.layout.player_texture_view, null) as androidx.media3.ui.PlayerView
         assertTrue(view.videoSurfaceView is android.view.TextureView)
+    }
+
+    @Test
+    fun `标记里带上崩溃当时的内存与运行时长`() {
+        PlaybackDiagnostics.beginPlayback(context, "ep=7 1080P codec=bytevc1 size=1924x1080")
+        val detail = PlaybackDiagnostics.noteStartup(context)!!
+        // 原生崩溃和被系统回收表现一样，只有内存与开机时长能区分，必须随标记留下。
+        assertTrue(detail.contains("avail="))
+        assertTrue(detail.contains("low="))
+        assertTrue(detail.contains("heap="))
+        assertTrue(detail.contains("uptime="))
+    }
+
+    @Test
+    fun `能从标记里取出这套解码组合`() {
+        val parsed =
+            PlaybackDiagnostics.interruptedCodec(
+                "11-05 21:04:58 ep=136 1080P codec=bytevc1 size=1924x1080 render=默认（硬件叠加）"
+            )
+        assertNotNull(parsed)
+        assertEquals("bytevc1", parsed!!.codec)
+        assertEquals(1924, parsed.width)
+        assertEquals(1080, parsed.height)
+    }
+
+    @Test
+    fun `标记缺编码或尺寸时不猜`() {
+        // codec 未知、尺寸缺失、尺寸非法，都不能拿去记住一条假的「解不了」。
+        assertNull(PlaybackDiagnostics.interruptedCodec("ep=3 1080P codec=? size=1924x1080"))
+        assertNull(PlaybackDiagnostics.interruptedCodec("ep=3 1080P codec=bytevc1"))
+        assertNull(PlaybackDiagnostics.interruptedCodec("ep=3 1080P codec=bytevc1 size=0x0"))
+        assertNull(PlaybackDiagnostics.interruptedCodec(""))
+    }
+
+    @Test
+    fun `播放器报错会写进报告且不影响异常中断`() {
+        PlaybackDiagnostics.notePlaybackError(
+            context,
+            "ep=147 quality=1080P codec=bytevc1 size=1924x1080 · ERROR_CODE_UNSPECIFIED",
+        )
+        val report = PlaybackDiagnostics.report(context)
+        assertTrue(report.contains("播放器报错"))
+        assertTrue(report.contains("ERROR_CODE_UNSPECIFIED"))
+        // 只是报错、进程还活着，不能算成「上次播放中异常中断」。
+        assertNull(PlaybackDiagnostics.noteStartup(context))
     }
 }
