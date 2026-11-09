@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.tv
 
+import com.hgtv.playback.PlaybackCompat
+import com.hgtv.playback.CodecCapabilities
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
@@ -143,7 +145,10 @@ object PlaybackDiagnostics {
         return buildString {
             appendLine("设备：${deviceLine(context)}")
             appendLine("画面输出：${PlaybackCompat.label()}")
-            appendLine("已学到的解码器失败记录：${CodecCapabilities.learnedCount()} 条")
+            val keys = CodecCapabilities.learnedKeys()
+            appendLine("已学到的解码器失败记录：${keys.size} 条")
+            // 列出来，否则只看条数分不清是「真解码不了」还是误记 —— 误记会让整类内容播不了。
+            keys.forEach { appendLine("  · $it") }
             // 0 条很容易被误解成「从没出过问题」：原生崩溃直接把进程带走，Media3 的
             // 解码器错误回调根本不会执行，所以那一类只能看下面的「异常中断」。
             appendLine("（系统直接终止进程的原生崩溃收不到回调，不计入条数，看下方异常中断）")

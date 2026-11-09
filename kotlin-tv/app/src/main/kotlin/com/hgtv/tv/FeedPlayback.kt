@@ -3,6 +3,9 @@ package com.hgtv.tv
 
 // 首页试播的数据与播放器适配：将内容接口和 Media3 播放实现接入试播组件。
 
+import com.hgtv.playback.openStream
+import com.hgtv.playback.VideoDataSource
+import com.hgtv.playback.CodecCapabilities
 import android.content.Context
 import android.view.View
 import androidx.media3.common.*
@@ -186,11 +189,12 @@ internal class PublicFeedBackend(
                 repository,
                 id,
                 quality,
-                CodecCapabilities::supports,
+                supportsRendition = { CodecCapabilities.supports(it) },
                 initialBytes = 32 * 1024,
-            ) {
-                it == null || CodecCapabilities.supports(it)
-            } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
+                supportsTrack = { it == null || CodecCapabilities.supports(it) },
+                relaxedRendition = { CodecCapabilities.supportsIgnoringLessons(it) },
+                relaxedTrack = { it == null || CodecCapabilities.supportsIgnoringLessons(it) },
+            ) ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
         return opened.video
     }
 

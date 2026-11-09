@@ -1,4 +1,4 @@
-package com.hgtv.tv
+package com.hgtv.playback
 
 import org.junit.Assert.*
 import org.junit.Test

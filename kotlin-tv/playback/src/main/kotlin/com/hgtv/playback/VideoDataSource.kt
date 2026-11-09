@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package com.hgtv.tv
+package com.hgtv.playback
 
 // 视频数据源适配：连接播放器读取请求与底层视频数据处理。
 

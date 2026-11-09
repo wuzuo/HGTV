@@ -1,0 +1,13 @@
+<resources>
+    <!-- 与 TV 端同一套底色：内容页以海报为主，深底能让封面颜色更准。
+         沉浸式由 Activity 自己调 WindowInsetsController，这里只管窗口背景与状态栏图标。
+         windowLightNavigationBar 是 API 27 才有的属性，minSdk 24 下不能写在这里。 -->
+    <style name="PhoneTheme" parent="android:style/Theme.Material.NoActionBar">
+        <item name="android:fontFamily">sans</item>
+        <item name="android:windowBackground">#0B0F15</item>
+        <item name="android:statusBarColor">#00000000</item>
+        <item name="android:navigationBarColor">#00000000</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+</resources>

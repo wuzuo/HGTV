@@ -1,5 +1,6 @@
 package com.hgtv.tv
 
+import com.hgtv.playback.playbackFailureSummary
 import com.hgtv.core.PlaybackDeviceRegistrationException
 import com.hgtv.core.PlaybackDeviceSession
 import org.junit.Assert.*

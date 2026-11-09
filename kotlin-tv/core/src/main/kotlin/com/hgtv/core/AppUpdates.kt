@@ -132,7 +132,13 @@ object UpdateFiles {
                 output.fd.sync()
             }
             if (!verify(partial, update)) throw IOException("安装包校验未通过，请重新下载")
-            if (!partial.renameTo(destination)) throw IOException("无法保存安装包")
+            // Android/Linux 的 renameTo 可以直接覆盖旧包；Windows 不允许覆盖已存在的目标，
+            // 兜底先删旧包再重命名（只影响本机跑测试，设备上走的是第一条路径）。
+            if (!partial.renameTo(destination) &&
+                !(destination.delete() && partial.renameTo(destination))
+            ) {
+                throw IOException("无法保存安装包")
+            }
         } finally {
             partial.delete()
         }

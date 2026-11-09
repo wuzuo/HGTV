@@ -16,4 +16,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "HGTV"
 
-include(":core", ":app")
+include(":core", ":playback", ":app", ":app-phone")
