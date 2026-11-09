@@ -32,7 +32,7 @@ android {
         minSdk = 24
         targetSdk = 36
         versionCode = System.getenv("HGTV_PHONE_VERSION_CODE")?.toInt() ?: 1
-        versionName = System.getenv("HGTV_PHONE_VERSION_NAME") ?: "0.1.0"
+        versionName = System.getenv("HGTV_PHONE_VERSION_NAME") ?: "0.1.1"
     }
 
     buildFeatures { compose = true }
