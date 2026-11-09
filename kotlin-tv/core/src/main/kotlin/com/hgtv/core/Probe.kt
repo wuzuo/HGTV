@@ -306,6 +306,45 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--sample")) {
+        // 把某集某个档位的前 1MB 落盘，用来确认服务端给的码流到底是什么编码——
+        // 只看 codec_type 字段不够，那只是服务端的标签。
+        val at = args.indexOf("--sample")
+        val episode = args.getOrNull(at + 1) ?: return
+        val out = args.getOrNull(at + 2) ?: "sample.mp4"
+        try {
+            val entry = JSONObject(repository.diagnosePlaybackModel(episode))
+            val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+            val rawFallback = model.opt("fallback_api")?.toString().orEmpty()
+            val fallbackUrl =
+                if (rawFallback.startsWith("{")) JSONObject(rawFallback).optString("fallback_api")
+                else rawFallback
+            val body =
+                repository.http
+                    .newCall(okhttp3.Request.Builder().url(fallbackUrl).build())
+                    .execute()
+                    .use { it.body?.string().orEmpty() }
+            val info = JSONObject(body).optJSONObject("video_info")?.optJSONObject("data") ?: return
+            val seed = info.str("key_seed")
+            val rows = info.optJSONObject("video_list") ?: return
+            val row =
+                rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.lastOrNull() ?: return
+            var url = cleanUrl(row.str("main_url"))
+            if (seed.isNotEmpty()) url = MediaCrypto.decryptUrl(url, decode64(seed))
+            val key = row.str("spade_a").takeIf { it.isNotEmpty() }?.let(MediaCrypto::deriveKey)
+            println("codec=${row.str("codec_type")}; urlLen=${url.length}; key=${key != null}")
+            RemoteVideo(repository.http, StreamInfo(url, key, "sample")).use { video ->
+                video.prepare(256 * 1024)
+                val bytes = video.read(0, 1 shl 20)
+                java.io.File(out).writeBytes(bytes)
+                println("saved=${bytes.size}; total=${video.total}; track=${video.trackInfo()}")
+            }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     val type = if (args.contains("--comic")) ContentType.COMIC else ContentType.SHORT
     val keyword = if (type == ContentType.COMIC) "修仙" else "总裁"
     val search = repository.search(keyword, type = type)

@@ -688,8 +688,14 @@ constructor(
     private fun playbackModel(ids: List<String>, id: String): JSONObject {
         // 与红果 7.2.9.32 的 player 请求体保持一致：少了 dr_scene / use_server_dns_scene /
         // disable_video_relate_book 时，播放服务只回 200 + 0 字节，既不报错也不给内容。
+        //
+        // device_level 决定服务端按什么解码能力供给编码，实测（2026-11-09，同一集 7704523554519256088）：
+        //   device_level=3（高档机） → 五档全 bytevc2（BVC2/H.266），本端无解码器，整档被过滤后报
+        //                             「没有可播放的清晰度」；
+        //   device_level=1（低档机） → 五档全 bytevc1（HEVC），系统硬解可播，分辨率不变（1080x1906）。
+        // 我们解不了 BVC2，就不该自称高档机：填 1 让服务端直接给兼容编码，比事后挑档可靠。
         val payload =
-            """{"biz_param":{"detail_page_version":0,"device_level":3,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":true,"use_server_dns_scene":"cold_start_stage","video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
+            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":true,"use_server_dns_scene":"cold_start_stage","video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                 .toByteArray()
         val response = playbackResponse(payload)
         val data = JSONObject(response)

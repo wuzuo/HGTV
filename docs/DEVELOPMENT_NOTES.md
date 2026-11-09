@@ -861,3 +861,29 @@ ROM 也没保留 mark-compact。所以「换个 GC 绕开 `ConcurrentCopying::Co
 
 结论：为消除崩溃去 root 没有收益。要 root 只对「读历史 tombstone / 冻结系统应用省内存」
 这类事情有用。实验做完已把 `dalvik.vm.gc` 清空，zygote 仍在跑（CC，即默认）。
+
+## 播放模型 `device_level` 决定编码供给：1 = HEVC，3 = BVC2（2026-11-09）
+
+现象：手机版播放记录里「商人胁迫节度使，你当这里是女频呐2」第 59 集报 `Source error`，
+`IOException: 没有电视可播放的清晰度`；同剧第 1/58/60 集正常。
+
+排查时先怀疑片源本身（用 `--playback-model` 拉模型：五档全 `bytevc2`，兼容请求
+`codec_type=0&force_codec=h264` 也仍全 `bytevc2`），但对比旧 fork（`D:/dev/hongguoTV`）
+装在同一台机器上却**能播**，且解码器是 `OMX.google.hevc.decoder`（HEVC）。
+
+差异只有一处：播放请求体里的 `biz_param.device_level`。
+
+| device_level | 该集五档编码 | 本端能否播放 |
+|---|---|---|
+| 3（高档机，本仓库原值） | 全 `bytevc2`（BVC2/H.266） | 否，ExoPlayer/MediaCodec 无解码器 |
+| 1（低档机，旧 fork 用值） | 全 `bytevc1`（HEVC） | 是，系统硬解，分辨率不变（1080x1906） |
+
+即服务端按「设备解码能力」挑编码：自称高档就给更省带宽的 BVC2，自称低档就给兼容的 HEVC。
+不是接口路径问题——把路径从 `/novel/player/multi_video_model/player/v1` 换回旧
+`/novel/player/multi_video_model/v1/` 且仍填 3，结果照样全 `bytevc2`。
+
+修法：`playbackModel` 的 payload 固定 `device_level: 1`。我们本来就解不了 BVC2，
+不该按高档机自报能力。实测该集在手机上起播正常（HEVC 软解，PLAYING 状态递增）。
+
+验证命令：`:core:run --args="--codecs <episodeId>"`（一次比对多集每档编码）；
+`:core:run --args="--sample <episodeId> <out.mp4>"` 落盘码流，用来确认真实编码而非服务端标签。
