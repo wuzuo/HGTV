@@ -887,3 +887,19 @@ ROM 也没保留 mark-compact。所以「换个 GC 绕开 `ConcurrentCopying::Co
 
 验证命令：`:core:run --args="--codecs <episodeId>"`（一次比对多集每档编码）；
 `:core:run --args="--sample <episodeId> <out.mp4>"` 落盘码流，用来确认真实编码而非服务端标签。
+
+## 播放失败文案要能区分「编码不支持」（2026-11-09）
+
+`streamLadder` 把「编码不兼容 / 地址缺失 / 加密缺 key」三种原因压成同一个空列表，
+用户侧只看到一句「没有可播放的清晰度」。手机端还沿用了 TV 的措辞「没有**电视**可播放的
+清晰度」，既点不出原因也不像给手机看的。
+
+现在整集所有档位都被 `UNPLAYABLE_CODECS`（bytevc2/bvc2）过滤掉时抛
+`UnsupportedCodecException`，其余情况仍报「没有可播放的清晰度」：
+
+- `playbackFailureSummary` 优先识别它 → 「这一集编码不受支持（BVC2／H.266），请换一集」
+- 手机端 `describePlaybackError` 直接显示该异常文案，且跳过 1s/2.5s/5s 三次自动重试
+  ——确定性错误多等 8.5 秒没有意义
+- 三处同类文案统一为「这一集没有这台设备能播的清晰度，换个清晰度或稍后再试」
+
+`device_level=1` 之后正常不会再现全档 BVC2，这条分支只在平台侧再次转码异常时兜底。
