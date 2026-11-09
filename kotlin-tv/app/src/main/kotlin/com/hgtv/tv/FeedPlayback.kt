@@ -186,11 +186,12 @@ internal class PublicFeedBackend(
                 repository,
                 id,
                 quality,
-                CodecCapabilities::supports,
+                supportsRendition = { CodecCapabilities.supports(it) },
                 initialBytes = 32 * 1024,
-            ) {
-                it == null || CodecCapabilities.supports(it)
-            } ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
+                supportsTrack = { it == null || CodecCapabilities.supports(it) },
+                relaxedRendition = { CodecCapabilities.supportsIgnoringLessons(it) },
+                relaxedTrack = { it == null || CodecCapabilities.supportsIgnoringLessons(it) },
+            ) ?: throw java.io.IOException("该作品暂时没有可试播的剧集")
         return opened.video
     }
 

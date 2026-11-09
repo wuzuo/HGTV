@@ -24,11 +24,19 @@ internal class DecoderLessons {
     fun fails(codec: String, width: Int?, height: Int?): Boolean {
         val normalized = codec.trim().lowercase()
         if (normalized.isEmpty()) return false
-        if (width != null && height != null && width > 0 && height > 0) {
-            if (failed.contains("$normalized|$width|$height")) return true
+        if (width == null || height == null || width <= 0 || height <= 0) {
+            // 无尺寸的记录来自元数据缺失的那次失败，不再用来封杀整个编码。
+            // 一次误判就会让该编码的所有清晰度全线不可播，代价远大于收益；
+            // 真实不支持时静态探测（MediaCodecList）本来就会拦。
+            return false
         }
-        // A remembered sizeless verdict (metadata was missing) covers that codec entirely.
-        return failed.contains(normalized)
+        return failed.contains("$normalized|$width|$height")
+    }
+
+    /** Drops one learned verdict; true when it was actually there. */
+    fun forget(codec: String, width: Int?, height: Int?): Boolean {
+        val exact = key(codec, width, height) ?: return false
+        return failed.remove(exact)
     }
 
     fun keys(): Set<String> = failed.toSet()

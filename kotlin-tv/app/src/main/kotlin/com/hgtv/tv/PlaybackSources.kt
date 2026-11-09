@@ -8,6 +8,7 @@ import com.hgtv.core.EmptyPlaybackResponseException
 import com.hgtv.core.PlaybackQuality
 import com.hgtv.core.RemoteVideo
 import com.hgtv.core.Rendition
+import com.hgtv.core.StreamLadder
 import com.hgtv.core.VideoTracks
 import okhttp3.OkHttpClient
 
@@ -52,6 +53,11 @@ internal class OpenedStream(
 /**
  * Opens the first rendition the device can actually decode: select by API metadata, then verify the
  * coded size read from the MP4 header and step down the ladder on mismatch.
+ *
+ * [relaxedRendition] / [relaxedTrack] 是兜底判定：只用静态探测，不看学到的失败记录。
+ * 学到的记录可能来自误判（例如进程被原生库带走被当成「这套格式解不了」），一旦误记，
+ * 严格判定会把所有档位都过滤掉，用户看到的就是「重试没用、换清晰度也没用」。
+ * 两条路都走到尽头时宁可放行试一次：失败只是回到原来的错误提示，不放行就是确定性播不了。
  */
 internal fun openStream(
     http: OkHttpClient,
@@ -62,9 +68,36 @@ internal fun openStream(
     initialBytes: Int = 256 * 1024,
     metadataAhead: List<String> = emptyList(),
     supportsTrack: (VideoTracks.Track?) -> Boolean,
+    relaxedRendition: (Rendition) -> Boolean = supportsRendition,
+    relaxedTrack: (VideoTracks.Track?) -> Boolean = supportsTrack,
 ): OpenedStream? {
     val ladder = repository.streamLadder(id, metadataAhead)
-    for (rendition in ladder.playbackOrder(maxQuality, supportsRendition)) {
+    val strict = ladder.playbackOrder(maxQuality, supportsRendition)
+    openFirst(ladder, http, strict, initialBytes, supportsTrack)?.let { return it }
+    val relaxed = ladder.playbackOrder(maxQuality, relaxedRendition)
+    if (relaxed.isEmpty()) return null
+    // 即使两轮的顺序一样也要重试：真正放宽的是 supportsTrack —— 它才拿得到 MP4 头里的
+    // 真实尺寸，而学到的失败记录正是按那个尺寸记的。
+    Log.w(
+        "HGTV",
+        "No rendition passed the strict decoder check; retrying ${relaxed.size} tier(s) " +
+            "against the static probe only (learned failures may be wrong)",
+    )
+    return openFirst(ladder, http, relaxed, initialBytes, relaxedTrack)?.also { opened ->
+        // 严格判定说不行、放宽后却打开了，说明那条学习记录是误判，撤掉它，
+        // 免得下次播放还要多走这一轮。
+        opened.track?.let { CodecCapabilities.forgive(it.fourcc, it.width, it.height) }
+    }
+}
+
+private fun openFirst(
+    ladder: StreamLadder,
+    http: OkHttpClient,
+    order: List<Rendition>,
+    initialBytes: Int,
+    supportsTrack: (VideoTracks.Track?) -> Boolean,
+): OpenedStream? {
+    for (rendition in order) {
         val video = RemoteVideo(http, rendition.toStreamInfo())
         try {
             video.prepare(initialBytes)

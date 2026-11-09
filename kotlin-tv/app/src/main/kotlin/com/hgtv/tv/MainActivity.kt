@@ -719,23 +719,25 @@ class MainActivity : Activity() {
                         .show()
                 }
             } else {
-                // 兼容档已经开着还是中断了，说明换渲染面这条路没解决。此时唯一还能自动做的
-                // 是把这套「编码 + 尺寸」记成解不了，下次选档直接避开它——否则每次都会
-                // 拿同一套组合再撞一遍，用户只能反复重启。解析不出来就只提示，不猜。
+                // 兼容档已经开着还是中断了。这里原来会把「编码 + 尺寸」永久记成解不了，
+                // 但实测这台设备的 ART 会在 GC / JIT 里随机崩，跟解码格式没关系；把崩溃
+                // 当成能力不足，会让这一整类内容从此播不了（0.1.24 的实际故障就是这么来的）。
+                // 所以只提示，不写学习记录。
                 val failed = PlaybackDiagnostics.interruptedCodec(detail)
-                val learned =
-                    failed != null && CodecCapabilities.learnFailure(failed.codec, failed.width, failed.height)
                 root.post {
                     Toast.makeText(
                             this,
                             if (failed != null)
-                                "上次在兼容模式下仍异常中断，已记录这套解码格式（${failed.codec} ${failed.width}x${failed.height}），下次优先尝试更低清晰度"
+                                "上次在兼容模式下仍异常中断（${failed.codec} ${failed.width}x${failed.height}）；如果反复出现，可在设置里换一档清晰度"
                             else "上次在兼容模式下仍异常中断；如果反复出现，可在设置里换一档清晰度",
                             Toast.LENGTH_LONG,
                         )
                         .show()
                 }
-                android.util.Log.w("HGTV", "Compat render still interrupted; learned=$learned")
+                android.util.Log.w(
+                    "HGTV",
+                    "Compat render still interrupted; not recorded as a decoder lesson",
+                )
             }
         }
         cloudAccount =
@@ -3637,11 +3639,14 @@ class MainActivity : Activity() {
                         repository,
                         requestedId,
                         maxQuality,
-                        CodecCapabilities::supports,
+                        supportsRendition = { CodecCapabilities.supports(it) },
                         metadataAhead = data.episodes.drop(selectedIndex + 1).take(2),
-                    ) {
-                        it == null || CodecCapabilities.supports(it)
-                    }
+                        supportsTrack = { it == null || CodecCapabilities.supports(it) },
+                        relaxedRendition = { CodecCapabilities.supportsIgnoringLessons(it) },
+                        relaxedTrack = {
+                            it == null || CodecCapabilities.supportsIgnoringLessons(it)
+                        },
+                    )
                     ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
             },
             { opened ->
@@ -3945,12 +3950,18 @@ class MainActivity : Activity() {
                                     repository,
                                     id,
                                     quality,
-                                    CodecCapabilities::supports,
+                                    supportsRendition = { CodecCapabilities.supports(it) },
                                     initialBytes = 32 * 1024,
                                     metadataAhead = metadataAhead,
-                                ) {
-                                    it == null || CodecCapabilities.supports(it)
-                                } ?: throw java.io.IOException("没有电视可播放的清晰度")
+                                    supportsTrack = { it == null || CodecCapabilities.supports(it) },
+                                    relaxedRendition = {
+                                        CodecCapabilities.supportsIgnoringLessons(it)
+                                    },
+                                    relaxedTrack = {
+                                        it == null ||
+                                            CodecCapabilities.supportsIgnoringLessons(it)
+                                    },
+                                ) ?: throw java.io.IOException("没有电视可播放的清晰度")
                             opened.video.also { remote = it }
                         }
                     if (preparedNext.complete(ticket, key, prepared)) {
@@ -4180,25 +4191,27 @@ class MainActivity : Activity() {
         saveProgress()
         cancelRecovery()
         cancelPrefetch()
-        // The device claimed support it doesn't have (MediaCodecList over-reporting): learn the
-        // runtime verdict and retry one tier lower automatically instead of surfacing the panel.
-        if (
-            problem is PlaybackException &&
-                problem.errorCode in
-                    PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException
-                            .ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
+        // 只有能力类错误才记成「这套编解码格式解不了」。ERROR_CODE_DECODING_FAILED（4003）
+        // 是解码途中失败，多数来自码流损坏、解密不匹配或瞬时故障；拿它封杀一整个尺寸，
+        // 会把同尺寸的其它集一起判死。降档照做 —— 换个档位还有机会。
+        if (problem is PlaybackException &&
+            problem.errorCode in
+                PlaybackException.ERROR_CODE_DECODER_INIT_FAILED..PlaybackException
+                        .ERROR_CODE_DECODING_FORMAT_UNSUPPORTED
         ) {
-            val track = currentTrack
-            val rendition = currentRendition
-            when {
-                track != null ->
-                    CodecCapabilities.learnFailure(track.fourcc, track.width, track.height)
-                rendition != null ->
-                    CodecCapabilities.learnFailure(
-                        rendition.codec,
-                        rendition.width,
-                        rendition.height,
-                    )
+            if (problem.errorCode != PlaybackException.ERROR_CODE_DECODING_FAILED) {
+                val track = currentTrack
+                val rendition = currentRendition
+                when {
+                    track != null ->
+                        CodecCapabilities.learnFailure(track.fourcc, track.width, track.height)
+                    rendition != null ->
+                        CodecCapabilities.learnFailure(
+                            rendition.codec,
+                            rendition.width,
+                            rendition.height,
+                        )
+                }
             }
             if (shouldAutoDowngrade(autoDowngrades, 2, currentTiers, attemptedQuality)) {
                 autoDowngrades++
