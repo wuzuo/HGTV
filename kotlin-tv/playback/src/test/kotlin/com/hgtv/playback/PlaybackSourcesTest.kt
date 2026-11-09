@@ -20,6 +20,14 @@ class PlaybackSourcesTest {
     }
 
     @Test
+    fun failureSummaryNamesUnsupportedCodecInsteadOfAskingToRetry() {
+        // ExoPlayer 把数据源的 IOException 统一包成 Source error，原因留在 cause 链里。
+        val wrapped =
+            java.io.IOException("Source error", com.hgtv.core.UnsupportedCodecException(listOf("bytevc2")))
+        assertEquals("这一集编码不受支持（BVC2／H.266），请换一集", playbackFailureSummary(wrapped))
+    }
+
+    @Test
     fun manualRetryOnlyOffersLowerTierThanAttempted() {
         assertEquals(720, nextLowerQuality(1080))
         assertEquals(480, nextLowerQuality(720))

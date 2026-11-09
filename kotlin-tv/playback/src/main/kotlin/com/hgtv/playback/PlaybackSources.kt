@@ -15,6 +15,9 @@ import okhttp3.OkHttpClient
 /** 只展示已知错误类别，不把响应正文、媒体地址或查询凭据带到界面和日志。 */
 fun playbackFailureSummary(problem: Throwable): String {
     val causes = generateSequence(problem) { it.cause }.take(8).toList()
+    // 编码不兼容是确定性结论：怎么说都不会变，别让用户以为等一会儿就好。
+    if (causes.any { it is com.hgtv.core.UnsupportedCodecException })
+        return "这一集编码不受支持（BVC2／H.266），请换一集"
     if (causes.any { it is com.hgtv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
     if (causes.any { it is EmptyPlaybackResponseException }) return "播放信息接口返回空响应"
@@ -30,7 +33,16 @@ fun playbackFailureSummary(problem: Throwable): String {
     if (causes.any { it is java.net.SocketTimeoutException }) return "网络请求超时"
     if (causes.any { it is java.net.UnknownHostException }) return "无法解析服务器域名"
     if (causes.any { it is java.io.EOFException }) return "视频分段提前断开"
-    val known = setOf("播放请求已取消", "播放准备已取消", "视频分段范围不匹配", "视频资源已变化，请重试", "播放信息为空", "播放地址格式异常")
+    val known =
+        setOf(
+            "播放请求已取消",
+            "播放准备已取消",
+            "视频分段范围不匹配",
+            "视频资源已变化，请重试",
+            "播放信息为空",
+            "播放地址格式异常",
+            "这一集没有这台设备能播的清晰度，换个清晰度或稍后再试",
+        )
     causes
         .mapNotNull { it.message }
         .firstOrNull { it in known }

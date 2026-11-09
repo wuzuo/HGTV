@@ -32,6 +32,6 @@ object EpisodeLoader {
                 supportsTrack = { it == null || CodecCapabilities.supports(it) },
                 relaxedRendition = { CodecCapabilities.supportsIgnoringLessons(it) },
                 relaxedTrack = { it == null || CodecCapabilities.supportsIgnoringLessons(it) },
-            ) ?: throw IOException("这个清晰度解不了，换个剧集或稍后再试")
+            ) ?: throw IOException("这一集没有这台设备能播的清晰度，换个清晰度或稍后再试")
         }
 }

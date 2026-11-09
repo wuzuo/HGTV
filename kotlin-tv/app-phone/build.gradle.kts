@@ -31,8 +31,9 @@ android {
         // VectorDrawable/desugaring 边角问题，实际在用机型也都远高于此。
         minSdk = 24
         targetSdk = 36
-        versionCode = System.getenv("HGTV_PHONE_VERSION_CODE")?.toInt() ?: 1
-        versionName = System.getenv("HGTV_PHONE_VERSION_NAME") ?: "0.1.1"
+        // 发版时由 CI 用标签与 run_number 覆盖；本地默认值只决定 debug 包的版本号。
+        versionCode = System.getenv("HGTV_PHONE_VERSION_CODE")?.toInt() ?: 3
+        versionName = System.getenv("HGTV_PHONE_VERSION_NAME") ?: "0.1.2"
     }
 
     buildFeatures { compose = true }

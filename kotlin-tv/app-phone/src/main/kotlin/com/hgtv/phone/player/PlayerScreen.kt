@@ -294,7 +294,11 @@ fun PlayerScreen(
                 override fun onPlayerError(error: PlaybackException) {
                     buffering = false
                     val detail = describePlaybackError(error)
-                    val wait = recovery.delayMillis
+                    // 「这一集编码不支持」重试三次也只是多等 8.5 秒，结果一样。
+                    val permanent =
+                        generateSequence(error as Throwable) { it.cause }
+                            .any { it is com.hgtv.core.UnsupportedCodecException }
+                    val wait = if (permanent) null else recovery.delayMillis
                     if (wait != null && recovery.consume()) {
                         // 取流失败一大半是瞬时的：注册身份这一集刚好被服务端判重、域名抖动、
                         // 连接被掐。先按 1s / 2.5s / 5s 自己救三次，别让用户看一行英文就没了。
@@ -703,6 +707,13 @@ fun PlayerScreen(
  */
 private fun describePlaybackError(error: PlaybackException): String {
     val chain = generateSequence(error as Throwable) { it.cause }.toList()
+    // 编码不兼容是确定性结论，重试和降档都不会变，直接把该怎么做说清楚。
+    chain
+        .filterIsInstance<com.hgtv.core.UnsupportedCodecException>()
+        .firstOrNull()
+        ?.let {
+            return it.message ?: "这一集编码不受支持，请换一集"
+        }
     val reason =
         chain
             .mapNotNull { it.message?.trim()?.takeIf { message -> message.isNotEmpty() } }

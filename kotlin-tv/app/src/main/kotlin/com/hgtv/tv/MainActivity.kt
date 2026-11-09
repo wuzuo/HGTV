@@ -3657,7 +3657,7 @@ class MainActivity : Activity() {
                             it == null || CodecCapabilities.supportsIgnoringLessons(it)
                         },
                     )
-                    ?: throw java.io.IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+                    ?: throw java.io.IOException("这一集没有这台设备能播的清晰度，换个清晰度或稍后再试")
             },
             { opened ->
                 if (promotedPreparation === pending) promotedPreparation = null
@@ -3971,7 +3971,7 @@ class MainActivity : Activity() {
                                         it == null ||
                                             CodecCapabilities.supportsIgnoringLessons(it)
                                     },
-                                ) ?: throw java.io.IOException("没有电视可播放的清晰度")
+                                ) ?: throw java.io.IOException("这一集没有这台设备能播的清晰度")
                             opened.video.also { remote = it }
                         }
                     if (preparedNext.complete(ticket, key, prepared)) {

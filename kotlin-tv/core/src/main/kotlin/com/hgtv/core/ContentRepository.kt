@@ -167,6 +167,18 @@ class SearchSessionExpiredException : IOException("搜索结果已过期，请�
 
 class EmptyPlaybackResponseException : IOException("播放接口暂时返回空响应，请稍后重试")
 
+/**
+ * 整集只有本机解不了的编码（BVC2/H.266）时抛出。
+ *
+ * 和「拿不到播放信息」分开：这是确定性结论，重试、换清晰度都不会变，界面应该直接让用户
+ * 换一集；混在 [IOException] 里只会得到一句「稍后再试」，让人对着同一集反复重试。
+ */
+class UnsupportedCodecException(val codecs: List<String>) :
+    IOException("这一集只有 BVC2（H.266）编码，当前设备没有对应解码器，请换一集")
+
+/** 本端（ExoPlayer + MediaCodec）解不了的编码：字节自研 BVC2，没有公开的系统解码器。 */
+private val UNPLAYABLE_CODECS = setOf("bytevc2", "bvc2")
+
 class ContentRepository
 @JvmOverloads
 constructor(
@@ -672,7 +684,7 @@ constructor(
     ): StreamInfo {
         val selected =
             streamLadder(id).select(maxQuality, supported)
-                ?: throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+                ?: throw IOException("这一集没有这台设备能播的清晰度，换个清晰度或稍后再试")
         val info = selected.toStreamInfo()
         return if (selected.quality > maxQuality) info.copy(quality = info.quality + "（兼容资源）")
         else info
@@ -831,7 +843,7 @@ constructor(
                         val url = cleanUrl(row.str("main_url"))
                         if (
                             codec.isBlank() ||
-                                codec in setOf("bytevc2", "bvc2") ||
+                                codec in UNPLAYABLE_CODECS ||
                                 (!url.startsWith("https://") && !url.startsWith("http://"))
                         )
                             return@runCatching null
@@ -901,15 +913,16 @@ constructor(
         // ByteVC2 resources can expose playable audio but no video track in Android's MP4
         // extractor.
         // Keep missing legacy codec labels usable, but never select a known incompatible variant.
-        val rows =
+        val offeredRows =
             videoList
                 .keys()
                 .asSequence()
                 .mapNotNull { k -> videoList.optJSONObject(k)?.let { k to it } }
-                .filter {
-                    it.second.str("main_url").isNotEmpty() &&
-                        it.second.str("codec_type").lowercase() !in setOf("bytevc2", "bvc2")
-                }
+                .filter { it.second.str("main_url").isNotEmpty() }
+                .toList()
+        val rows =
+            offeredRows
+                .filter { it.second.str("codec_type").lowercase() !in UNPLAYABLE_CODECS }
                 .map { (k, o) ->
                     Triple(
                         qualityNumber(
@@ -945,7 +958,14 @@ constructor(
                     }
                     .getOrNull()
             }
-        if (renditions.isEmpty()) throw IOException("没有电视可播放的清晰度，请稍后再试或选择其他剧集")
+        if (renditions.isEmpty()) {
+            // 整集全是被过滤掉的编码：换清晰度、重试都不会变，要说清是编码问题，
+            // 否则只剩一句「稍后再试」，用户会对同一集反复重试。
+            val codecs = offeredRows.map { it.second.str("codec_type").lowercase() }.distinct()
+            if (codecs.isNotEmpty() && codecs.all { it in UNPLAYABLE_CODECS })
+                throw UnsupportedCodecException(codecs)
+            throw IOException("这一集没有可播放的清晰度，请稍后再试或选择其他剧集")
+        }
         return StreamLadder(renditions)
     }
 
