@@ -91,13 +91,20 @@ jobs:
         run: |
           # --latest=false：仓库里 TV 端也在发版，应用内更新读的是「最新发行版」。
           # 手机端的 Release 一旦被标成 latest，TV 端就会读到没有更新清单的发行版。
-          # 更新内容取标签注释（`git tag -a phone-vX.Y.Z -m "..."`），
-          # 免得每次发版都要回来改这个文件。
-          notes="$(git tag -l --format='%(contents:body)' "$TAG")"
-          [ -n "$notes" ] || notes="手机端。与 TV 端共用协议层与播放层，界面为触摸屏重写。"
+          #
+          # 说明文字取自 kotlin-tv/PHONE_RELEASE_NOTES.md（和 TV 端的 RELEASE_NOTES.md
+          # 一个思路）：进仓库、可以被 review，比从标签注释里取更可靠。
+          notes_file=kotlin-tv/PHONE_RELEASE_NOTES.md
+          if [ ! -f "$notes_file" ]; then
+            # 重跑很久以前的标签时，那时还没有这个文件。
+            printf '手机端。与 TV 端共用协议层与播放层，界面为触摸屏重写。\n' > "$RUNNER_TEMP/phone-notes.md"
+            notes_file="$RUNNER_TEMP/phone-notes.md"
+          fi
           gh release view "$TAG" >/dev/null 2>&1 || \
             gh release create "$TAG" --latest=false --title "HGTV 手机端 ${TAG#phone-v}" \
-              --notes "$notes"
+              --notes-file "$notes_file"
+          # 重跑同一个标签时也刷新说明，方便修正文案。
+          gh release edit "$TAG" --notes-file "$notes_file"
           gh release upload "$TAG" outputs/phone/"$TAG"/*.apk outputs/phone/"$TAG"/sha256sum.txt --clobber
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
