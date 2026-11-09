@@ -45,6 +45,37 @@ class AppUpdatesTest {
     }
 
     @Test
+    fun releaseListSkipsOtherProductLines() {
+        // 手机端发版会把 GitHub 的 latest 顶掉；列表兜底要能跳过 phone-v* 找到 TV 版本。
+        fun release(tag: String, withManifest: Boolean = true) =
+            JSONObject()
+                .put("tag_name", tag)
+                .put("prerelease", false)
+                .put(
+                    "assets",
+                    if (withManifest) org.json.JSONArray().put(JSONObject().put("name", "update.json"))
+                    else org.json.JSONArray().put(JSONObject().put("name", "hgtv-phone.apk")),
+                )
+
+        val mixed = org.json.JSONArray()
+            .put(release("phone-v0.1.0", withManifest = false))
+            .put(release("kotlin-v0.1.25"))
+            .put(release("kotlin-v0.1.24"))
+        assertEquals("kotlin-v0.1.25", AppUpdate.latestTagFromList(mixed.toString()))
+
+        // 没有清单的 TV 发行版同样要跳过，别把用户引到一个下载不了的版本上。
+        val broken = org.json.JSONArray()
+            .put(release("phone-v0.1.1", withManifest = false))
+            .put(release("kotlin-v0.1.26", withManifest = false))
+        assertNull(AppUpdate.latestTagFromList(broken.toString()))
+
+        // 预发布版本不能进稳定通道。
+        val prerelease = org.json.JSONArray()
+            .put(release("kotlin-v0.1.27").put("prerelease", true))
+        assertNull(AppUpdate.latestTagFromList(prerelease.toString()))
+    }
+
+    @Test
     fun latestReleaseRequiresStableTagAndManifest() {
         val release =
             JSONObject()

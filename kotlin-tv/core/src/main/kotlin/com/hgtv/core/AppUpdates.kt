@@ -11,6 +11,7 @@ import java.security.MessageDigest
 import java.util.concurrent.TimeUnit
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 
 data class AppUpdate(
@@ -35,6 +36,15 @@ data class AppUpdate(
         // stable-channel rule holds without extra filtering.
         const val LATEST_API = "https://api.github.com/repos/$REPOSITORY/releases/latest"
 
+        /**
+         * 发行版列表，用于 [/latest] 被别人顶掉时的兜底。
+         *
+         * 仓库里不止 TV 一个 App：手机端（`phone-v*`）也会发 Release，而 GitHub 的
+         * `latest` 取的是「最近一个已发布的正式版」，不分产品线。手机端一发版，
+         * TV 端读到的就成了那个没有 `update.json` 的发行版，更新检查随即失败。
+         */
+        const val RELEASES_API = "https://api.github.com/repos/$REPOSITORY/releases?per_page=30"
+
         fun latestTag(json: String): String {
             val release = JSONObject(json)
             require(!release.optBoolean("prerelease", false)) { "不能使用预发布版本" }
@@ -52,6 +62,22 @@ data class AppUpdate(
         }
 
         const val MAX_APK_BYTES = 80L * 1024 * 1024
+
+        /**
+         * 从发行版列表里挑最新的可用 TV 版本；挑不出来返回 null。
+         *
+         * 「可用」沿用 [latestTag] 的判定：非预发布、标签是 `kotlin-v*`、且带 `update.json`。
+         * 别的产品线的发行版（手机端 `phone-v*`）会在这一步被跳过。
+         */
+        fun latestTagFromList(json: String): String? {
+            val releases = JSONArray(json)
+            for (index in 0 until releases.length()) {
+                val release = releases.optJSONObject(index) ?: continue
+                val tag = runCatching { latestTag(release.toString()) }.getOrNull()
+                if (tag != null) return tag
+            }
+            return null
+        }
 
         fun parse(json: String): AppUpdate {
             val o = JSONObject(json)
@@ -191,14 +217,25 @@ class AppUpdateRepository : java.io.Closeable {
         }
     }
 
+    /**
+     * 找到「当前该更新到哪个版本」。
+     *
+     * 先走 `/releases/latest`（一次请求、语义最准）；它被别家 App 的发行版顶掉时
+     * 退回列表里筛。两条路都失败就把 `/latest` 的原错误抛出去，别把 404 说成格式错误。
+     */
+    private fun resolveLatestTag(): String {
+        val direct = runCatching { AppUpdate.latestTag(readMetadata(AppUpdate.LATEST_API)) }
+        direct.getOrNull()?.let { return it }
+        val fallback =
+            runCatching { AppUpdate.latestTagFromList(readMetadata(AppUpdate.RELEASES_API)) }
+                .getOrNull()
+        return fallback
+            ?: throw (direct.exceptionOrNull() as? IOException
+                ?: IOException("最新发行版信息格式不正确"))
+    }
+
     fun latest(): AppUpdate {
-        val release = readMetadata(AppUpdate.LATEST_API)
-        val tag =
-            try {
-                AppUpdate.latestTag(release)
-            } catch (_: Exception) {
-                throw IOException("最新发行版信息格式不正确")
-            }
+        val tag = resolveLatestTag()
         val metadata = readMetadata("${AppUpdate.RELEASES}/download/$tag/update.json")
         if (
             runCatching { JSONObject(metadata).optString("packageName") }.getOrDefault("") ==

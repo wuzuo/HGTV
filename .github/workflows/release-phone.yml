@@ -89,9 +89,11 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.tag.outputs.tag }}
         run: |
+          # --latest=false：仓库里 TV 端也在发版，应用内更新读的是「最新发行版」。
+          # 手机端的 Release 一旦被标成 latest，TV 端就会读到没有更新清单的发行版。
           gh release view "$TAG" >/dev/null 2>&1 || \
-            gh release create "$TAG" --title "HGTV 手机端 ${TAG#phone-v}" \
-              --notes "手机端首版。与 TV 端共用协议层与播放层，界面为触摸屏重写。"
+            gh release create "$TAG" --latest=false --title "HGTV 手机端 ${TAG#phone-v}" \
+              --notes "手机端。与 TV 端共用协议层与播放层，界面为触摸屏重写。"
           gh release upload "$TAG" outputs/phone/"$TAG"/*.apk outputs/phone/"$TAG"/sha256sum.txt --clobber
 
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
