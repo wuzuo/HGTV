@@ -31,6 +31,9 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          # GitHub 侧偶发 504 / 读超时，会把 Gradle 发行包与依赖下载打断；
+          # 缓存 ~/.gradle 后命中就整段跳过下载。
+          cache: gradle
 
       - uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3
         with:
