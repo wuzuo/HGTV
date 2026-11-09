@@ -6,6 +6,11 @@
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
     <!-- 播放期间保持屏幕常亮，由播放页自己 setKeepScreenOn，不申请系统常亮。 -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+    <!-- 后台播放：播放器放在 MediaSessionService 里，切到桌面后由前台服务继续放。 -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
 
     <!-- 明确要求触摸屏：这是手机端，装到电视上没有意义，也让商店把电视过滤掉。
          不声明 leanback feature —— 声明了反而要求必须带 LEANBACK_LAUNCHER 过滤器。 -->
@@ -29,6 +34,7 @@
             android:exported="true"
             android:launchMode="singleTop"
             android:resizeableActivity="true"
+            android:supportsPictureInPicture="true"
             android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|uiMode"
             android:windowSoftInputMode="adjustResize">
             <intent-filter>
@@ -36,5 +42,15 @@
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
         </activity>
+
+        <!-- 后台播放宿主：媒体通知与锁屏控制都由 media3 的 MediaSessionService 提供。 -->
+        <service
+            android:name=".playback.PlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback">
+            <intent-filter>
+                <action android:name="androidx.media3.session.MediaSessionService"/>
+            </intent-filter>
+        </service>
     </application>
 </manifest>

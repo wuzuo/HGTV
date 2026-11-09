@@ -7,7 +7,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hgtv.core.ContentRepository
 import com.hgtv.core.Detail
+import com.hgtv.core.RecentSearch
 import com.hgtv.core.Series
+import com.hgtv.phone.data.PhoneLibrary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -83,3 +85,98 @@ class DetailStore(private val repository: ContentRepository) {
         }
     }
 }
+
+/**
+ * 搜索状态：联想词、结果分页、历史记录。
+ *
+ * 关键词只在 [search] 时定稿；联想每输入一次就换一批，但结果列表不会跟着抖动——
+ * 用户点了搜索或点了联想词才算数。
+ */
+@Stable
+class SearchStore(private val repository: ContentRepository, private val library: PhoneLibrary) {
+    var query by mutableStateOf("")
+        private set
+    var items by mutableStateOf<List<Series>>(emptyList())
+        private set
+    var loading by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+    var finished by mutableStateOf(false)
+        private set
+    var suggestions by mutableStateOf<List<String>>(emptyList())
+        private set
+    var active by mutableStateOf(false)
+        private set
+
+    var history by mutableStateOf<List<RecentSearch>>(emptyList())
+        private set
+
+    private var page = 0
+    private var inFlight = false
+
+    fun refreshHistory() {
+        history = library.searches
+    }
+
+    fun clearHistory() {
+        library.clearSearches()
+        history = library.searches
+    }
+
+    suspend fun suggest(text: String) {
+        query = text
+        if (text.isBlank()) {
+            suggestions = emptyList()
+            return
+        }
+        suggestions =
+            runCatching { withContext(Dispatchers.IO) { repository.searchSuggestions(text) } }
+                .getOrDefault(emptyList())
+    }
+
+    suspend fun search(text: String) {
+        val clean = text.trim()
+        if (clean.isEmpty()) return
+        query = clean
+        suggestions = emptyList()
+        active = true
+        finished = false
+        page = 0
+        items = emptyList()
+        error = null
+        library.rememberSearch(clean)
+        history = library.searches
+        loadMore()
+    }
+
+    suspend fun loadMore() {
+        if (inFlight || finished || !active) return
+        inFlight = true
+        loading = true
+        error = null
+        try {
+            val next = withContext(Dispatchers.IO) { repository.search(query, page + 1) }
+            val known = items.mapTo(HashSet()) { it.id }
+            items = items + next.items.filter { it.id !in known }
+            page += 1
+            finished = !next.hasMore
+        } catch (problem: Exception) {
+            error = problem.message ?: "搜索失败"
+        } finally {
+            loading = false
+            inFlight = false
+        }
+    }
+
+    fun reset() {
+        active = false
+        items = emptyList()
+        query = ""
+        suggestions = emptyList()
+        finished = false
+        page = 0
+        error = null
+    }
+}
+

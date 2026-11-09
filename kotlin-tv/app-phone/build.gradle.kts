@@ -84,6 +84,10 @@ dependencies {
 
     // PlayerView 复用 media3-ui；播放内核与 DataSource 走 :playback。
     implementation("androidx.media3:media3-ui:1.11.1")
+    // 后台播放：界面用 MediaController 连 MediaSessionService，播放器活在服务里。
+    implementation("androidx.media3:media3-session:1.11.1")
+    // 播放控制层用到的图标（播放/暂停/清晰度/弹幕/画中画等）。
+    implementation("androidx.compose.material:material-icons-extended")
 
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs_nio:2.1.5")
 
