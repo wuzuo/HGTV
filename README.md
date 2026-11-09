@@ -1,6 +1,6 @@
 # HGTV
 
-非官方红果短剧客户端，只包含两个端：**Android TV** 与 **Windows 桌面**。两端共用同一份内容解析核心与本机桥接服务，界面与播放各自实现。
+非官方红果短剧客户端，包含三个端：**Android TV**、**Android 手机** 与 **Windows 桌面**。三端共用同一份内容解析核心，TV 与手机共用播放层，界面各自实现。
 
 > 本项目与红果官方无隶属关系。非官方接口可能随平台调整失效。
 
@@ -9,17 +9,20 @@
 | 目录 | 内容 |
 | --- | --- |
 | `kotlin-tv/` | Android TV 客户端（Kotlin + Android View + Media3），最低 Android 6.0 / API 23 |
+| `kotlin-tv/app-phone/` | Android 手机客户端（Kotlin + Compose + Media3），最低 Android 7.0 / API 24 |
+| `kotlin-tv/playback/` | TV 与手机共用的播放层：取流、档位筛选、解码能力探测、设备身份读取 |
 | `desktop-windows-flutter/` | Windows 客户端（Flutter + media_kit / libmpv），Windows 10/11 x64 便携版 |
-| `bridge/` | 两端共用的本机回环服务（Kotlin/JVM）：站点解析、签名、解密与账号逻辑，只监听 `127.0.0.1` 的随机端口 |
-| `kotlin-tv/core/` | 共享内容核心，`kotlin-tv` 与 `bridge` 都通过 Gradle 依赖它 |
-| `scripts/` | 两端构建脚本与 TV 发布工具 |
-| `.github/workflows/` | TV APK 校验、Windows 便携包构建 |
+| `bridge/` | Windows 端使用的本机回环服务（Kotlin/JVM）：站点解析、签名、解密与账号逻辑，只监听 `127.0.0.1` 的随机端口 |
+| `kotlin-tv/core/` | 共享内容核心，TV、手机与 `bridge` 都通过 Gradle 依赖它 |
+| `scripts/` | 各端构建脚本与 TV 发布工具 |
+| `.github/workflows/` | TV / 手机 APK 发布、Windows 便携包构建 |
 
 ## 当前版本
 
 | 端 | 版本 | 说明 |
 | --- | --- | --- |
-| Android TV | 0.1.11 / versionCode 52 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
+| Android TV | 0.1.24 / versionCode 65 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
+| Android 手机 | 0.1.0 / versionCode 1 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
 | Windows | 0.1.0 | 便携 ZIP，由 CI 构件提供，未接入自动更新 |
 
 
@@ -65,6 +68,17 @@
 - 真实视频时间轴的弹幕，暂停冻结、快进快退后重新定位；显示方式（只显一行 / 上方显示 / 全屏显示 / 隐藏）、速度、字号与透明度可调并记住；同句重复聚合、热点弹幕中央突出，表情标签按随包图片显示。
 - 本集评论支持连续加载、游标续读、去重与失败重试；评论和弹幕均只读，未提供发送、回复或点赞。
 
+## Android 手机
+
+独立 APK，与 TV 端同装不冲突。界面用 Compose 重写（TV 那套遥控器焦点与手写 `LinearLayout` 在触摸屏上没有可复用的部分），协议层与播放层直接复用。
+
+- 首页推荐瀑布网格，触底自动翻页；详情页显示剧集信息与全部选集。
+- 播放页全屏横屏、保持常亮，一集播完自动进下一集；失败时给出可重试提示。
+- 取流与 TV 端共用同一套判定：接口元数据选档 → MP4 头真实尺寸复核 → 逐级降档 → 严格判定全灭时按静态探测兜底。
+- 最高取 1080P；设备身份、签名、AES 解密全部走 `kotlin-tv/core`，与 TV 端同一份实现。
+
+尚未实现：搜索与找剧筛选、收藏与观看记录、续播、弹幕与评论、清晰度切换、登录、后台播放与画中画、触摸手势（双击暂停 / 上下滑亮度音量 / 横滑进度）。
+
 ## Windows
 
 [构建与使用说明](desktop-windows-flutter/README.md)
@@ -87,6 +101,14 @@
 ./kotlin-tv/gradlew -p kotlin-tv :app:assembleDebug
 ```
 
+**Android 手机**（同一套 JDK / SDK）：
+
+```bash
+./kotlin-tv/gradlew -p kotlin-tv :app-phone:assembleDebug
+```
+
+`playback` 模块同时被两个 app 依赖，改动它要跑 `:playback:testDebugUnitTest` 与两端的编译。
+
 **Windows**（需要 JDK 17、Flutter 3.47、Visual Studio 2022「使用 C++ 的桌面开发」）：
 
 ```powershell
@@ -101,10 +123,12 @@ TV 发布走标签：改好 `versionName` / `versionCode` 与 `kotlin-tv/RELEASE
 
 应用内更新读取 GitHub Releases（仓库常量在 `kotlin-tv/core/src/main/kotlin/com/hgtv/core/AppUpdates.kt`）。Windows 暂未接入自动更新，从同一 Release 的 ZIP 附件下载。
 
+手机端单独走 `phone-v<版本>` 标签，由 `Release Phone APK` 工作流构建签名 APK 并建独立 Release（附件为 APK 与 `sha256sum.txt`）。手机端没有应用内更新，`versionCode` 取 CI 构建序号。两条标签线互不影响，TV 的 `kotlin-v*` 不会触发手机构建，反之亦然。
+
 ## 开发约定
 
 - 功能与修复从 `main` 拉 `feature-<描述>` 或 `fix-<描述>` 分支，验证后走 PR 合回 `main`。
-- 两端共用 `kotlin-tv/core` 与 `bridge`，改动共享核心时两端都要跑检查。
+- 三端共用 `kotlin-tv/core`，TV 与手机另共用 `kotlin-tv/playback`，改动共享层时所有依赖方都要跑检查。
 - 修改用户可见行为时同步更新对应 README，只描述已实现的能力。
 - 详细流程见 [开发流程](CONTRIBUTING.md)，自动化协作约定见 [AGENTS.md](AGENTS.md)。
 

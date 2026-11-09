@@ -3,6 +3,16 @@ package com.hgtv.tv
 
 // TV 主页面入口：协调栏目切换、详情和正式播放；具体界面组件及数据请求由协作对象负责。
 
+import com.hgtv.playback.shouldAutoDowngrade
+import com.hgtv.playback.playbackFailureSummary
+import com.hgtv.playback.openStream
+import com.hgtv.playback.openAllFilesAccessSettings
+import com.hgtv.playback.nextLowerQuality
+import com.hgtv.playback.VideoDataSource
+import com.hgtv.playback.PlaybackCompat
+import com.hgtv.playback.OpenedStream
+import com.hgtv.playback.IdentityStatus
+import com.hgtv.playback.CodecCapabilities
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.Context

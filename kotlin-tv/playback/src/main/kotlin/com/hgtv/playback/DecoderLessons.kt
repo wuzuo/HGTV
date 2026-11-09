@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package com.hgtv.tv
+package com.hgtv.playback
 
 /**
  * Learned decoder failures: capabilities the device claims but cannot actually decode. Keys are
  * codec plus coded size, so a failed portrait 1080x1920 never blocks landscape 1920x1080.
  */
-internal class DecoderLessons {
+class DecoderLessons {
     private val failed = HashSet<String>()
 
     fun key(codec: String, width: Int?, height: Int?): String? {

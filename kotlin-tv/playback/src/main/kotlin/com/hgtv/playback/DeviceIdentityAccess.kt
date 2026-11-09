@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package com.hgtv.tv
+package com.hgtv.playback
 
 import android.content.Context
 import android.content.Intent
@@ -20,7 +20,7 @@ import java.io.File
  *
  * 这里把三种情况分开，让设置页能给出准确的一句话。
  */
-internal sealed interface IdentityStatus {
+sealed interface IdentityStatus {
     /** 读到了可用配置。 */
     data class Ready(val identity: DeviceIdentity, val file: File) : IdentityStatus
 
@@ -65,7 +65,7 @@ internal sealed interface IdentityStatus {
  *
  * 单独拎出来是为了能脱离 Android 运行时测：这两个输入已经把环境差异吃干净了。
  */
-internal fun resolveIdentityStatus(
+fun resolveIdentityStatus(
     loaded: DeviceIdentityFile.Loaded?,
     permitted: Boolean,
 ): IdentityStatus =
@@ -82,7 +82,7 @@ internal fun resolveIdentityStatus(
  * 部分 ROM 没有按包名直达的入口（会抛 ActivityNotFoundException），回退到应用列表页。
  * 两个都失败就什么都不做——用户仍可自己进系统设置开启。
  */
-internal fun openAllFilesAccessSettings(context: Context) {
+fun openAllFilesAccessSettings(context: Context) {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return
     runCatching {
         context.startActivity(

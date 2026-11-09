@@ -1,5 +1,6 @@
 package com.hgtv.tv
 
+import com.hgtv.playback.PlaybackCompat
 import android.content.Context
 import org.junit.After
 import org.junit.Assert.assertEquals

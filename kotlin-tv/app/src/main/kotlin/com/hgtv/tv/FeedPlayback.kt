@@ -3,6 +3,9 @@ package com.hgtv.tv
 
 // 首页试播的数据与播放器适配：将内容接口和 Media3 播放实现接入试播组件。
 
+import com.hgtv.playback.openStream
+import com.hgtv.playback.VideoDataSource
+import com.hgtv.playback.CodecCapabilities
 import android.content.Context
 import android.view.View
 import androidx.media3.common.*

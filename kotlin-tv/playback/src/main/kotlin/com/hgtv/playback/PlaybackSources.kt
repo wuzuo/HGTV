@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
-package com.hgtv.tv
+package com.hgtv.playback
 
 import android.util.Log
 import com.hgtv.core.ContentHttpException
@@ -13,7 +13,7 @@ import com.hgtv.core.VideoTracks
 import okhttp3.OkHttpClient
 
 /** 只展示已知错误类别，不把响应正文、媒体地址或查询凭据带到界面和日志。 */
-internal fun playbackFailureSummary(problem: Throwable): String {
+fun playbackFailureSummary(problem: Throwable): String {
     val causes = generateSequence(problem) { it.cause }.take(8).toList()
     if (causes.any { it is com.hgtv.core.PlaybackDeviceRegistrationException })
         return "播放设备注册失败"
@@ -41,7 +41,7 @@ internal fun playbackFailureSummary(problem: Throwable): String {
     return if (causes.any { it is java.io.IOException }) "播放数据读取失败" else "播放准备失败"
 }
 
-internal class OpenedStream(
+class OpenedStream(
     val video: RemoteVideo,
     val rendition: Rendition?,
     val tiers: List<Rendition>,
@@ -59,7 +59,7 @@ internal class OpenedStream(
  * 严格判定会把所有档位都过滤掉，用户看到的就是「重试没用、换清晰度也没用」。
  * 两条路都走到尽头时宁可放行试一次：失败只是回到原来的错误提示，不放行就是确定性播不了。
  */
-internal fun openStream(
+fun openStream(
     http: OkHttpClient,
     repository: ContentRepository,
     id: String,
@@ -118,13 +118,13 @@ private fun openFirst(
 }
 
 /** Next manual retry tier: only offer a lower option than what was already attempted. */
-internal fun nextLowerQuality(attempted: Int): Int? =
+fun nextLowerQuality(attempted: Int): Int? =
     PlaybackQuality.options.filter { it < attempted }.maxOrNull()
 
 /**
  * Auto-downgrade is worth another attempt while budget remains and a strictly lower tier exists.
  */
-internal fun shouldAutoDowngrade(
+fun shouldAutoDowngrade(
     attempts: Int,
     maxAttempts: Int,
     tiers: List<Rendition>,

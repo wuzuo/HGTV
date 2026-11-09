@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.tv
 
+import com.hgtv.playback.VideoDataSource
 import androidx.media3.datasource.DataSpec
 import com.hgtv.core.*
 import okhttp3.*

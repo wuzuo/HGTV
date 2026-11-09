@@ -1,5 +1,7 @@
 package com.hgtv.tv
 
+import com.hgtv.playback.resolveIdentityStatus
+import com.hgtv.playback.IdentityStatus
 import com.hgtv.core.DeviceIdentity
 import com.hgtv.core.DeviceIdentityFile
 import org.junit.Assert.assertEquals

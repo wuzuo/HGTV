@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.tv
 
+import com.hgtv.playback.PlaybackCompat
+import com.hgtv.playback.CodecCapabilities
 import android.app.ActivityManager
 import android.content.Context
 import android.os.Build
