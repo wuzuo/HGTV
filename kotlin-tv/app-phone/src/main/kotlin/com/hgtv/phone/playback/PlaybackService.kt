@@ -86,11 +86,13 @@ class PlaybackService : MediaSessionService() {
 
     override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = session
 
-    /** 从最近任务里划掉时：还在播就继续播（交给前台服务），停了就收工。 */
+    /** 从最近任务里划掉：视同退出，收干净走人，不在后台留声音。 */
     override fun onTaskRemoved(rootIntent: Intent?) {
-        val player = session?.player
-        val keep = player != null && player.playWhenReady && player.mediaItemCount > 0
-        if (!keep) stopSelf()
+        session?.player?.run {
+            stop()
+            clearMediaItems()
+        }
+        stopSelf()
     }
 
     override fun onDestroy() {

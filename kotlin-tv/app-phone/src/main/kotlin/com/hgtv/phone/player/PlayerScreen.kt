@@ -6,6 +6,7 @@ import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Rational
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
@@ -93,7 +94,12 @@ fun PlayerScreen(
     val connection = remember(context) { PlaybackConnection(context) }
     DisposableEffect(connection) {
         connection.connect()
-        onDispose { connection.release() }
+        onDispose {
+            // 先停再断。控制器一旦释放就调不动播放器了，而服务里的播放器
+            // 不会因为控制器断开就自己停——只断连接的话，声音会一直在后台响。
+            runCatching { connection.controller?.stop() }
+            connection.release()
+        }
     }
     val controller = connection.controller
 
@@ -202,6 +208,18 @@ fun PlayerScreen(
             )
         }
     }
+
+    // 离开播放页：落进度、停播放、回上一页。
+    // 顶部箭头和系统返回键必须走同一条路——之前只有箭头调了 stop()，
+    // 按返回键是从 MainActivity 的返回栈直接弹页，播放器还保持着 playWhenReady，
+    // 于是「退出后声音还在响」。
+    val leave: () -> Unit = {
+        persistProgress()
+        uploadToCloud()
+        runCatching { controller?.stop() }
+        onBack()
+    }
+    BackHandler(onBack = leave)
 
     // 换集或换档位就是一次新的取流：重试预算重新算。
     LaunchedEffect(index, quality) { recovery.reset() }
@@ -589,11 +607,7 @@ fun PlayerScreen(
                 danmakuOn = danmakuOn,
                 qualityLabel = "${quality}P",
                 speedLabel = if (speed == 1f) "倍速" else "${speed}x",
-                onBack = {
-                    persistProgress()
-                    controller?.stop()
-                    onBack()
-                },
+                onBack = leave,
                 onPlayPause = {
                     val c = controller ?: return@PlayerControls
                     if (c.isPlaying) c.pause() else c.play()
