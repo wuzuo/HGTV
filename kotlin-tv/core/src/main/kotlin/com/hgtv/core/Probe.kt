@@ -1,5 +1,8 @@
 package com.hgtv.core
 
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import org.json.JSONObject
+
 fun main(args: Array<String>) {
     val repository = ContentRepository()
     if (args.contains("--category-recommendations")) {
@@ -155,6 +158,9 @@ fun main(args: Array<String>) {
                 println(
                     "allSearchPage=$page; items=${result.items.size}; hasMore=${result.hasMore}; titles=${result.items.take(5).joinToString { it.title }}"
                 )
+                println(
+                    "allSearchPage=$page; ids=${result.items.take(5).joinToString { "${it.id}:${it.title}" }}"
+                )
                 if (!result.hasMore) break
             }
         } finally {
@@ -184,6 +190,114 @@ fun main(args: Array<String>) {
                 check(result.hasMore == (pageNumber < ranking.totalPages))
                 println(
                     "rankingPage=$pageNumber/${ranking.totalPages}; items=${result.items.size}; ranks=${ranks.first()}..${ranks.last()}; firstHeat=${ranking.positions[result.items.first().id]!!.heat}; updated=${ranking.updatedText}"
+                )
+            }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--episodes")) {
+        val series = args.getOrNull(args.indexOf("--episodes") + 1) ?: return
+        try {
+            val detail = repository.detail(series)
+            println("series=${detail.series.title}; episodes=${detail.episodes.size}")
+            detail.episodes.forEachIndexed { index, id -> println(" ${index + 1}: $id") }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--codecs")) {
+        // 一次比对多集：只在「某集播不了、相邻集能播」时需要，看的是每档的编码。
+        val episodes =
+            args.drop(args.indexOf("--codecs") + 1).filter { it.matches(Regex("[0-9]{1,30}")) }
+        try {
+            for (episode in episodes) {
+                runCatching {
+                        val entry = JSONObject(repository.diagnosePlaybackModel(episode))
+                        val model =
+                            entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+                        val list = model.optJSONArray("video_list")
+                        val codecs =
+                            (0 until (list?.length() ?: 0)).mapNotNull { index ->
+                                list!!
+                                    .optJSONObject(index)
+                                    ?.optJSONObject("video_meta")
+                                    ?.let { "${it.optString("definition")}/${it.optString("codec_type")}" }
+                            }
+                        println("$episode -> ${codecs.joinToString(" ")}")
+                    }
+                    .onFailure { println("$episode -> ${it.message}") }
+            }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--playback-model")) {
+        // 只看结构，不打印媒体地址：定位「为什么没有可播档位」时，编码/加密/地址缺失
+        // 三种原因在 streamLadder 里都被压成同一个空列表。
+        val episode = args.getOrNull(args.indexOf("--playback-model") + 1) ?: return
+        try {
+            val entry = JSONObject(repository.diagnosePlaybackModel(episode))
+            val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+            println(
+                "modelKeys=${model.keys().asSequence().joinToString(",")}; fallback=${model.opt("fallback_api")?.let { it.toString().take(60) }}"
+            )
+            val list = model.optJSONArray("video_list")
+            println("video_list=${list?.length() ?: 0}")
+            for (i in 0 until (list?.length() ?: 0)) {
+                val row = list!!.optJSONObject(i) ?: continue
+                val meta = row.optJSONObject("video_meta")
+                val encryption = row.optJSONObject("encrypt_info")
+                val url = row.optString("main_url")
+                println(
+                    " row$i codec=${meta?.optString("codec_type")}; definition=${meta?.optString("definition")}; " +
+                        "w=${meta?.optInt("vwidth")}; h=${meta?.optInt("vheight")}; urlLen=${url.length}; " +
+                        "urlHead=${url.take(8)}; encrypt=${encryption?.opt("encrypt")}; " +
+                        "spade=${!encryption?.optString("spade_a").isNullOrEmpty()}"
+                )
+            }
+            // fallback 才是真正取流的地址；兼容请求（codec_type=0 + force_codec=h264）在同一
+            // 地址上追加参数，两条都打出来才能看出服务端到底给不给 H.264。
+            val rawFallback = model.opt("fallback_api")?.toString().orEmpty()
+            val fallbackUrl =
+                if (rawFallback.startsWith("{")) JSONObject(rawFallback).optString("fallback_api")
+                else rawFallback
+            fun dumpFallback(label: String, url: String) {
+                val body =
+                    repository.http
+                        .newCall(okhttp3.Request.Builder().url(url).build())
+                        .execute()
+                        .use { it.body?.string().orEmpty() }
+                val info = JSONObject(body).optJSONObject("video_info")?.optJSONObject("data")
+                val rows = info?.optJSONObject("video_list")
+                println(
+                    "$label http=${body.length}B; keys=${rows?.keys()?.asSequence()?.joinToString(",")}; " +
+                        "seed=${!info?.optString("key_seed").isNullOrEmpty()}"
+                )
+                for (k in rows?.keys()?.asSequence().orEmpty()) {
+                    val o = rows!!.optJSONObject(k) ?: continue
+                    println(
+                        "  $label[$k] codec=${o.str("codec_type")}; desc=${o.str("quality_desc")}; " +
+                            "h=${o.str("height")}; urlLen=${o.str("main_url").length}"
+                    )
+                }
+            }
+            if (fallbackUrl.isNotBlank()) {
+                dumpFallback("fb", fallbackUrl)
+                dumpFallback(
+                    "fb-h264",
+                    fallbackUrl.toHttpUrl()
+                        .newBuilder()
+                        .setQueryParameter("codec_type", "0")
+                        .setQueryParameter("force_codec", "h264")
+                        .build()
+                        .toString(),
                 )
             }
         } finally {

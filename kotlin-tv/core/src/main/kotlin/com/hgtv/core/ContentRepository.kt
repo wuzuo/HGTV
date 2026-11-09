@@ -788,6 +788,17 @@ constructor(
         return body
     }
 
+    /**
+     * 诊断入口：原样返回这一集的播放模型 JSON。
+     *
+     * 只给 [Probe] 用来查「这一集为什么没有可播档位」——[streamLadder] 把拿不到档位的
+     * 三种原因（编码不兼容 / 地址缺失 / 加密缺 key）压成了同一个空列表，排查时看不出区别。
+     */
+    fun diagnosePlaybackModel(id: String): String {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        return playbackModel(listOf(id), id).toString()
+    }
+
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
