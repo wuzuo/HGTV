@@ -114,6 +114,37 @@ class ContentRepositoryTest {
     }
 
     @Test
+    fun bvc2OnlyEpisodeFallsBackToCompatDeviceLevelOnce() {
+        val levels = mutableListOf<String>()
+        val repo = repository { request ->
+            if (request.url.host == "example.com")
+                // 兼容请求（codec_type=0&force_codec=h264）也只回 BVC2：服务端没有 H.264 源。
+                """{"video_info":{"data":{"video_list":{"1080p":{"quality_desc":"1080p","codec_type":"bytevc2","main_url":"https://example.com/bvc2.mp4"}}}}}"""
+            else {
+                val buffer = okio.Buffer()
+                request.body?.writeTo(buffer)
+                val level = Regex("\"device_level\":(\\d+)").find(buffer.readUtf8())
+                    ?.groupValues
+                    ?.get(1)
+                    .orEmpty()
+                levels += level
+                // 高档机口径只给 BVC2；低档机口径给 HEVC。与线上实测一致。
+                val codec = if (level == "1") "bytevc1" else "bytevc2"
+                """{"data":{"123":{"video_model":{"video_list":[{"main_url":"https://example.com/$codec.mp4","video_meta":{"definition":"1080p","codec_type":"$codec","vwidth":1080,"vheight":1906},"encrypt_info":{"encrypt":false}}],"fallback_api":"https://example.com/fallback"}}}}"""
+            }
+        }
+        val ladder = repo.streamLadder("123")
+        assertEquals("https://example.com/bytevc1.mp4", ladder.renditions.single().url)
+        assertEquals(1906, ladder.renditions.single().height)
+        assertEquals(listOf("3", "1"), levels)
+
+        // 同一集重试时直接按低档机口径要，不再先白跑一次高档机请求。
+        val again = repo.streamLadder("123")
+        assertEquals("https://example.com/bytevc1.mp4", again.renditions.single().url)
+        assertEquals(listOf("3", "1", "1"), levels)
+    }
+
+    @Test
     fun allSearchUsesPublicJsonEndpointAndKeepsBothContentTypes() {
         var calls = 0
         val repo = repository { request ->

@@ -903,3 +903,29 @@ ROM 也没保留 mark-compact。所以「换个 GC 绕开 `ConcurrentCopying::Co
 - 三处同类文案统一为「这一集没有这台设备能播的清晰度，换个清晰度或稍后再试」
 
 `device_level=1` 之后正常不会再现全档 BVC2，这条分支只在平台侧再次转码异常时兜底。
+
+## 修正：`device_level` 只对**注册身份**有效，真实身份下无效（2026-11-09）
+
+上一篇记录说「`device_level` 决定编码供给」，结论只对了一半。补测（同一集
+`7704523554519256088`、同一台机器、连续两次请求）：
+
+| 身份 | device_level=3 | device_level=1 |
+|---|---|---|
+| 自动注册（`/sdcard/hgtv/device-identity.txt` 读不到时） | bytevc2 | **bytevc1（可播）** |
+| 本地真实身份（读到官方 7.2.9.32 记录） | bytevc2 | **bytevc2（仍不可播）** |
+
+即服务端对本地真实身份按该设备自身档位供给，请求里的 `device_level` 被忽略。之前
+0.1.2 之所以「改成 1 就好了」，是因为当时重装 debug 包把 `MANAGE_EXTERNAL_STORAGE`
+重置了，应用读不到身份文件、走了自动注册 —— 不是 `device_level` 的功劳。
+
+因此降级不能只改参数，必须**换一台注册身份**：`streamLadder` 拿到全 BVC2 时用
+`PlaybackDeviceSession.registeredProfile()`（新接口，不写 `localRejected`、不覆盖
+`ready`，所以后续集仍优先用真实身份）配合 `device_level=1` 重取一次。实测起播
+1.9 秒，解码器 `OMX.google.hevc.decoder`。
+
+默认口径回到原样：`PREFERRED_DEVICE_LEVEL = 3`。普通集两种口径都是 `bytevc1`，
+不会多花请求；只有全 BVC2 的集才会走一次降级，并记住集号（`bvc2FallbackEpisodes`，
+32 条 LRU），失败重试不再先白跑一趟。
+
+诊断：`:core:run --args="--identity <身份文件> --ladder <集号>"` 可复现整条降级链路，
+`--codec-level <集号>` 对比两种口径的实际编码。

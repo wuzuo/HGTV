@@ -220,6 +220,18 @@ constructor(
 
     private val upcomingPlaybackModels = linkedMapOf<String, UpcomingPlaybackModel>()
 
+    /**
+     * 已确认「默认取流只给 BVC2、必须换注册身份重取」的集号。
+     *
+     * 降级要重发一次请求（还要注册一台新设备身份），同一集失败重试时没必要再白跑一趟。
+     * 只记最近 32 集，够覆盖一轮连播，也不会随使用时长无界增长。
+     */
+    private val bvc2FallbackEpisodes =
+        object : LinkedHashMap<String, Unit>(32, 0.75f, true) {
+            override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Unit>?) =
+                size > 32
+        }
+
     /** 当前**注册**身份是否已经用掉播放接口的那一次放行机会（本地真实身份不受此限）。 */
     private var playbackIdentitySpent = false
 
@@ -697,19 +709,24 @@ constructor(
      * 签名器内部的设备信息与 query 同源。另外新注册的设备身份基本只有一次放行额度，靠
      * [PlaybackDeviceSession] 换身份或改用本地真实身份来绕。这里只负责按这些要求拼请求体。
      */
-    private fun playbackModel(ids: List<String>, id: String): JSONObject {
+    private fun playbackModel(
+        ids: List<String>,
+        id: String,
+        deviceLevel: Int = PREFERRED_DEVICE_LEVEL,
+        forceRegistered: Boolean = false,
+    ): JSONObject {
         // 与红果 7.2.9.32 的 player 请求体保持一致：少了 dr_scene / use_server_dns_scene /
         // disable_video_relate_book 时，播放服务只回 200 + 0 字节，既不报错也不给内容。
         //
-        // device_level 决定服务端按什么解码能力供给编码，实测（2026-11-09，同一集 7704523554519256088）：
-        //   device_level=3（高档机） → 五档全 bytevc2（BVC2/H.266），本端无解码器，整档被过滤后报
-        //                             「没有可播放的清晰度」；
-        //   device_level=1（低档机） → 五档全 bytevc1（HEVC），系统硬解可播，分辨率不变（1080x1906）。
-        // 我们解不了 BVC2，就不该自称高档机：填 1 让服务端直接给兼容编码，比事后挑档可靠。
+        // device_level 影响服务端按什么解码能力供给编码，实测（2026-11-09，同一集 7704523554519256088）：
+        //   注册身份 + 3（高档机） → 五档全 bytevc2（BVC2/H.266），本端无解码器；
+        //   注册身份 + 1（低档机） → 五档全 bytevc1（HEVC），系统硬解可播，分辨率不变（1080x1906）；
+        //   本地真实身份（device-identity.txt）→ **两种口径都回 bytevc2**，服务端按身份自身档位供给。
+        // 所以默认沿用官方口径 3；整集全 BVC2 时由 [streamLadder] 换成注册身份 + 1 重取一次。
         val payload =
-            """{"biz_param":{"detail_page_version":0,"device_level":1,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":true,"use_server_dns_scene":"cold_start_stage","video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
+            """{"biz_param":{"detail_page_version":0,"device_level":$deviceLevel,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":true,"use_server_dns_scene":"cold_start_stage","video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
                 .toByteArray()
-        val response = playbackResponse(payload)
+        val response = playbackResponse(payload, forceRegistered)
         val data = JSONObject(response)
         val code = data.optInt("Code", data.optInt("code", 0))
         if (code != 0) throw IOException("播放接口暂不可用（错误码 $code）")
@@ -750,20 +767,32 @@ constructor(
      * 播放复用；注册来的身份每播一次就得换一台（见 [PlaybackDeviceSession.invalidate]）。
      * 域名按网页端集号的归属顺序试：网页详情页的集号属于 hl 集群，其余两个是兜底。
      */
-    private fun playbackResponse(payload: ByteArray): String {
+    private fun playbackResponse(payload: ByteArray, forceRegistered: Boolean = false): String {
         var lastProblem: Exception? = null
         // 这一趟里已经用过一台注册设备：下一轮必须换，否则必然空响应。
         var spentInThisCall = false
         for (host in PLAYBACK_MODEL_HOSTS) {
-            var identity = playbackSession.profile(http)
-            if (!identity.trusted && (playbackIdentitySpent || spentInThisCall)) {
-                // 注册身份只有一次额度：这个身份已经用过（上次播放，或这一趟的上一个域名），换一台。
-                playbackSession.invalidate()
-                identity = playbackSession.profile(http)
-            }
-            if (!identity.trusted) {
-                playbackIdentitySpent = true
-                spentInThisCall = true
+            val identity: PlaybackDeviceSession.Profile
+            try {
+                if (forceRegistered) {
+                    // 降级专用：每个域名都换一台全新注册身份，且不动本地配置的真实身份。
+                    identity = playbackSession.registeredProfile(http)
+                } else {
+                    var profile = playbackSession.profile(http)
+                    if (!profile.trusted && (playbackIdentitySpent || spentInThisCall)) {
+                        // 注册身份只有一次额度：这个身份已经用过（上次播放，或这一趟的上一个域名），换一台。
+                        playbackSession.invalidate()
+                        profile = playbackSession.profile(http)
+                    }
+                    if (!profile.trusted) {
+                        playbackIdentitySpent = true
+                        spentInThisCall = true
+                    }
+                    identity = profile
+                }
+            } catch (problem: PlaybackDeviceRegistrationException) {
+                lastProblem = problem
+                continue
             }
             try {
                 return signedPlayback(host, identity, payload)
@@ -812,9 +841,10 @@ constructor(
      * 只给 [Probe] 用来查「这一集为什么没有可播档位」——[streamLadder] 把拿不到档位的
      * 三种原因（编码不兼容 / 地址缺失 / 加密缺 key）压成了同一个空列表，排查时看不出区别。
      */
-    fun diagnosePlaybackModel(id: String): String {
+    @JvmOverloads
+    fun diagnosePlaybackModel(id: String, deviceLevel: Int = PREFERRED_DEVICE_LEVEL): String {
         require(id.matches(Regex("[0-9]{1,30}")))
-        return playbackModel(listOf(id), id).toString()
+        return playbackModel(listOf(id), id, deviceLevel).toString()
     }
 
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
@@ -822,14 +852,61 @@ constructor(
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
         require(id.matches(Regex("[0-9]{1,30}")))
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
-        // 后续模型仅在内存保留 60 秒，领取即移除；失败重试不会反复复用同一个旧地址。
-        val cached =
-            synchronized(upcomingPlaybackModels) {
-                val now = clock()
-                upcomingPlaybackModels.entries.removeAll { now - it.value.savedAt !in 0..60_000 }
-                upcomingPlaybackModels.remove(id)?.entry
-            }
-        val entry = cached ?: playbackModel((listOf(id) + metadataAhead).distinct(), id)
+        val ids = (listOf(id) + metadataAhead).distinct()
+        val cached = takeCachedPlaybackModel(id)
+        // 这一集已知只给 BVC2：直接用「注册身份 + 低档机口径」要，省掉一次注定白跑的请求。
+        val knownFallback = synchronized(bvc2FallbackEpisodes) { id in bvc2FallbackEpisodes }
+        val entry =
+            cached
+                ?: playbackModel(ids, id, if (knownFallback) FALLBACK_DEVICE_LEVEL else PREFERRED_DEVICE_LEVEL)
+        try {
+            return ladderFrom(entry)
+        } catch (unsupported: UnsupportedCodecException) {
+            if (knownFallback) throw unsupported
+            // 默认身份只给 BVC2，本机没有对应解码器。换一台注册身份并申报低档机重取一次：
+            // 实测同一集会返回全档 HEVC，分辨率不变，等于「自动切换成能播的方式」。
+            // 代价只是这一集的这一次请求，正常剧集仍走默认身份与默认口径。
+            forgetCachedPlaybackModels(ids)
+            rememberBvc2Fallback(id)
+            val retried =
+                runCatching {
+                        // 关键在于换一台**注册**身份：本地真实身份被服务端当成高端机，改 device_level
+                        // 也会继续给 BVC2（实测 2026-11-09）；注册身份才按低端机给 HEVC。
+                        playbackModel(ids, id, FALLBACK_DEVICE_LEVEL, forceRegistered = true)
+                    }
+                    .getOrElse {
+                    // 重取失败（身份额度用尽、网络抖动）时保留原始结论，别把编码问题说成网络问题；
+                    // 失败原因挂到 suppressed 上，排查时从堆栈就能看到，不影响用户看到的文案。
+                    unsupported.addSuppressed(it)
+                    throw unsupported
+                }
+            return ladderFrom(retried)
+        }
+    }
+
+    /** 领一份缓存的后续模型；只保留 60 秒，领取即移除，失败重试不会反复复用同一个旧地址。 */
+    private fun takeCachedPlaybackModel(id: String): JSONObject? =
+        synchronized(upcomingPlaybackModels) {
+            val now = clock()
+            upcomingPlaybackModels.entries.removeAll { now - it.value.savedAt !in 0..60_000 }
+            upcomingPlaybackModels.remove(id)?.entry
+        }
+
+    private fun forgetCachedPlaybackModels(ids: List<String>) {
+        synchronized(upcomingPlaybackModels) { ids.forEach(upcomingPlaybackModels::remove) }
+    }
+
+    private fun rememberBvc2Fallback(id: String) {
+        synchronized(bvc2FallbackEpisodes) { bvc2FallbackEpisodes[id] = Unit }
+    }
+
+    /**
+     * 把一份播放模型解析成档位列表。
+     *
+     * 整集都是本机解不了的编码时抛 [UnsupportedCodecException]——这是确定性结论，调用方据此
+     * 决定是否换一种申报口径重取，界面也可以用来说清「换一集」而不是「稍后再试」。
+     */
+    private fun ladderFrom(entry: JSONObject): StreamLadder {
         val model = entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
         // The current model already carries plain media URLs, dimensions and CENC keys.
         // Only use the legacy fallback endpoint when this shape has no usable rendition.
@@ -993,6 +1070,17 @@ constructor(
 
         private const val PLAYBACK_MODEL_PATH =
             "/novel/player/multi_video_model/player/v1"
+
+        /**
+         * 播放请求里申报的设备档位。
+         *
+         * 服务端按这个值挑编码：3（高档机）会推行 BVC2，1（低档机）给 HEVC。默认按官方策略
+         * 申报 3，只有整集全 BVC2、本机解不了时才用 1 重取一次（见 [streamLadder]）。
+         */
+        private const val PREFERRED_DEVICE_LEVEL = 3
+
+        /** 降级口径：服务端据此给兼容编码（实测同一集全档 bytevc1/HEVC，分辨率不变）。 */
+        private const val FALLBACK_DEVICE_LEVEL = 1
 
         /** 红果 7.2.9.32 的播放参数；旧版本号会被播放服务直接判空。 */
         private val PLAYBACK_QUERY =

@@ -4,6 +4,9 @@ import okhttp3.HttpUrl.Companion.toHttpUrl
 import org.json.JSONObject
 
 fun main(args: Array<String>) {
+    args.indexOf("--identity").takeIf { it >= 0 }?.let { at ->
+        args.getOrNull(at + 1)?.let { DeviceIdentityFile.path = java.io.File(it) }
+    }
     val repository = ContentRepository()
     if (args.contains("--category-recommendations")) {
         try {
@@ -300,6 +303,52 @@ fun main(args: Array<String>) {
                         .toString(),
                 )
             }
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
+    if (args.contains("--codec-level")) {
+        // 同一集、同一身份下比对不同 device_level 的编码供给，用来区分「档位决定」与「身份决定」。
+        val ids = args.drop(args.indexOf("--codec-level") + 1).filter { it.matches(Regex("[0-9]{1,30}")) }
+        for (level in listOf(3, 1)) {
+            for (id in ids) {
+                runCatching {
+                        val entry = JSONObject(repository.diagnosePlaybackModel(id, level))
+                        val model =
+                            entry.optJSONObject("video_model") ?: JSONObject(entry.str("video_model"))
+                        val list = model.optJSONArray("video_list")
+                        val codecs =
+                            (0 until (list?.length() ?: 0)).mapNotNull { index ->
+                                list!!
+                                    .optJSONObject(index)
+                                    ?.optJSONObject("video_meta")
+                                    ?.let { it.optString("codec_type") }
+                            }
+                        println("level=$level $id -> ${codecs.distinct().joinToString(",")}")
+                    }
+                    .onFailure { println("level=$level $id -> ${it.javaClass.simpleName}: ${it.message}") }
+            }
+        }
+        repository.http.connectionPool.evictAll()
+        repository.http.dispatcher.executorService.shutdown()
+        return
+    }
+    if (args.contains("--ladder")) {
+        // 走正式选流链路（含「全档 BVC2 时自动换低档机口径」的降级），验证这一集能否播。
+        val episode = args.getOrNull(args.indexOf("--ladder") + 1) ?: return
+        try {
+            val ladder = repository.streamLadder(episode)
+            ladder.renditions.forEach {
+                println("${it.quality}p ${it.codec} ${it.width}x${it.height}")
+            }
+            println(
+                "count=${ladder.renditions.size} best=${ladder.renditions.maxByOrNull { it.quality }?.quality}p"
+            )
+        } catch (problem: Exception) {
+            println("FAILED ${problem.javaClass.simpleName}: ${problem.message}")
+            problem.printStackTrace()
         } finally {
             repository.http.connectionPool.evictAll()
             repository.http.dispatcher.executorService.shutdown()

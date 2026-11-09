@@ -100,6 +100,20 @@ class PlaybackDeviceSession(
                     .also { ready = it }
             }
         }
+        return registerProfile(http).also { ready = it }
+    }
+
+    /**
+     * 临时要一台**注册**身份，不动本地配置的真实身份。
+     *
+     * 用于「真实身份拿到的片源本机解不了」时的降级：服务端会给注册身份按低端机供给编码。
+     * 与 [invalidate] 的区别是不把本地身份标记为失效（那会让后续所有集都降级），
+     * 也不覆盖 [ready]，所以下一次正常请求仍优先用真实身份。
+     */
+    @Synchronized
+    internal fun registeredProfile(http: OkHttpClient): Profile = registerProfile(http)
+
+    private fun registerProfile(http: OkHttpClient): Profile {
         val device =
             try {
                 register(http) ?: throw PlaybackDeviceRegistrationException()
@@ -113,19 +127,18 @@ class PlaybackDeviceSession(
             throw PlaybackDeviceRegistrationException()
         if (Thread.currentThread().isInterrupted) throw InterruptedIOException("播放请求已取消")
         return Profile(
-                VendorConstants.device +
-                    mapOf(
-                        "device_id" to device.deviceId,
-                        "iid" to device.installId,
-                        "cdid" to cdid,
-                    ),
-                device.cookies
-                    .filterKeys {
-                        it in setOf("install_id", "ttreq", "store-region", "store-region-src")
-                    }
-                    .entries
-                    .joinToString("; ") { (name, value) -> "$name=$value" },
-            )
-            .also { ready = it }
+            VendorConstants.device +
+                mapOf(
+                    "device_id" to device.deviceId,
+                    "iid" to device.installId,
+                    "cdid" to cdid,
+                ),
+            device.cookies
+                .filterKeys {
+                    it in setOf("install_id", "ttreq", "store-region", "store-region-src")
+                }
+                .entries
+                .joinToString("; ") { (name, value) -> "$name=$value" },
+        )
     }
 }
