@@ -62,6 +62,20 @@ jobs:
           printf '%s' "$KEYSTORE" | base64 -d > "$RUNNER_TEMP/hgtv-release.jks"
           echo "HGTV_KEYSTORE=$RUNNER_TEMP/hgtv-release.jks" >> "$GITHUB_ENV"
 
+      - name: Fetch the Gradle distribution
+        # wrapper 下载只试一次：GitHub 侧偶发 504 时整条构建直接报废。
+        # 这里先把它重试到缓存里，后面所有 Gradle 调用都不再触发下载。
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            if ./kotlin-tv/gradlew -p kotlin-tv --version >/dev/null 2>&1; then
+              echo "Gradle distribution ready (attempt $attempt)"
+              exit 0
+            fi
+            echo "::warning::Gradle distribution download failed (attempt $attempt), retrying"
+            sleep 15
+          done
+          ./kotlin-tv/gradlew -p kotlin-tv --version
+
       - name: Build signed release APK
         env:
           HGTV_STORE_PASSWORD: ${{ secrets.HGTV_STORE_PASSWORD }}
