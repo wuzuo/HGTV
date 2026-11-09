@@ -5,8 +5,6 @@ import android.app.Activity
 import android.content.Context
 import android.content.ContextWrapper
 import android.content.pm.ActivityInfo
-import android.media.AudioManager
-import android.provider.Settings
 import android.view.WindowManager
 import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
@@ -73,24 +71,6 @@ class PlayerWindow(private val activity: Activity?) {
         window.decorView.systemUiVisibility = android.view.View.SYSTEM_UI_FLAG_VISIBLE
     }
 }
-
-/** 当前的系统亮度（0.01~1），读不到就按 0.5 算。 */
-fun systemBrightness(context: Context): Float {
-    val value =
-        runCatching {
-                Settings.System.getInt(context.contentResolver, Settings.System.SCREEN_BRIGHTNESS)
-            }
-            .getOrDefault(128)
-    return (value / 255f).coerceIn(0.01f, 1f)
-}
-
-fun applyBrightness(activity: Activity?, value: Float) {
-    val window = activity?.window ?: return
-    window.attributes =
-        window.attributes.apply { screenBrightness = value.coerceIn(0.01f, 1f) }
-}
-
-fun audioManager(context: Context) = context.getSystemService(AudioManager::class.java)
 
 tailrec fun Context.findActivity(): Activity? =
     when (this) {

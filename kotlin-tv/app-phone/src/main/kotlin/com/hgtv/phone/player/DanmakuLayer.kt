@@ -24,6 +24,7 @@ import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.hgtv.core.Danmaku
+import com.hgtv.core.DanmakuEmoji
 
 /**
  * 压在画面上的弹幕层。
@@ -114,7 +115,14 @@ private fun layoutLanes(
     val sorted = items.sortedBy { it.offsetMs }
     val measured =
         sorted.map { item ->
-            val layout = measurer.measure(AnnotatedString(item.text), style, maxLines = 1)
+            // 平台的弹幕表情不是字形而是 `[笑哭]` 这类方括号标签；换成对应字形后
+            // 交给系统字体画——手机上系统 emoji 字体本身就是彩色的，不需要再铺一层图片。
+            val layout =
+                measurer.measure(
+                    AnnotatedString(DanmakuEmoji.displayText(item.text)),
+                    style,
+                    maxLines = 1,
+                )
             item to layout
         }
     val lineHeight = measured.maxOfOrNull { it.second.size.height }?.toFloat() ?: 0f

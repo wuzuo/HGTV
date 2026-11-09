@@ -34,10 +34,16 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LifecycleEventEffect
+import com.hgtv.core.DeviceIdentityMonitor
 import com.hgtv.core.PlaybackQuality
 import com.hgtv.phone.PhoneApp
 import com.hgtv.phone.data.PhoneSettings
+import com.hgtv.playback.IdentityStatus
+import com.hgtv.playback.openAllFilesAccessSettings
 import kotlin.math.roundToInt
 
 /** 设置页：只放真正会改变行为的开关，不做「关于我们」这类占位。 */
@@ -46,8 +52,17 @@ fun SettingsScreen(onBack: () -> Unit) {
     val settings = PhoneApp.settings
     val library = PhoneApp.library
     val account = PhoneApp.account
+    val context = LocalContext.current
     var confirmClearHistory by remember { mutableStateOf(false) }
     var confirmSignOut by remember { mutableStateOf(false) }
+    var identityOpen by remember { mutableStateOf(false) }
+    var identity by remember { mutableStateOf(IdentityStatus.of(context)) }
+
+    // 从系统「所有文件访问」设置页回来时重新读一次：权限刚开的话，这时才看得到共享目录里的文件。
+    LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+        runCatching { DeviceIdentityMonitor.resolve() }
+        identity = IdentityStatus.of(context)
+    }
 
     Column(
         Modifier.fillMaxSize()
@@ -71,6 +86,16 @@ fun SettingsScreen(onBack: () -> Unit) {
         }
 
         Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+            // 播放身份放在最前面：播不出来时第一件事就是看它。
+            SettingTitle("播放身份")
+            ActionRow("设备身份配置  ·  ${identityLabel(identity)}") { identityOpen = true }
+            Text(
+                "读到真实设备 identity 就跳过自动注册。没有也能播，只是每集要多注册一次设备。",
+                style = MaterialTheme.typography.labelSmall,
+                color = Palette.TextTertiary,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 2.dp),
+            )
+
             SettingTitle("默认清晰度")
             Row(Modifier.padding(horizontal = 16.dp)) {
                 PlaybackQuality.options.forEach { quality ->
@@ -174,7 +199,66 @@ fun SettingsScreen(onBack: () -> Unit) {
             containerColor = Palette.Surface,
         )
     }
+
+    if (identityOpen) {
+        AlertDialog(
+            onDismissRequest = { identityOpen = false },
+            title = { Text(identityTitle(identity)) },
+            text = { Text(identityMessage(identity)) },
+            confirmButton = {
+                if (identity is IdentityStatus.NoPermission) {
+                    TextButton(onClick = {
+                        openAllFilesAccessSettings(context)
+                        identityOpen = false
+                    }) { Text("去开启") }
+                } else {
+                    TextButton(onClick = { identityOpen = false }) { Text("好") }
+                }
+            },
+            dismissButton = if (identity is IdentityStatus.NoPermission) {
+                { TextButton(onClick = { identityOpen = false }) { Text("取消") } }
+            } else null,
+            containerColor = Palette.Surface,
+        )
+    }
 }
+
+/** 设置页那一行的状态词，控制在四个字以内，和 TV 端一致。 */
+private fun identityLabel(status: IdentityStatus): String =
+    when (status) {
+        is IdentityStatus.Ready -> "已读取"
+        IdentityStatus.NoPermission -> "需授权"
+        IdentityStatus.NotConfigured -> "未放置"
+    }
+
+private fun identityTitle(status: IdentityStatus): String =
+    when (status) {
+        is IdentityStatus.Ready -> "设备身份配置"
+        IdentityStatus.NoPermission -> "需要「所有文件访问」权限"
+        IdentityStatus.NotConfigured -> "还没有设备身份配置"
+    }
+
+private fun identityMessage(status: IdentityStatus): String =
+    when (status) {
+        is IdentityStatus.Ready ->
+            "读取位置：${status.file.absolutePath}\n\n" +
+                "device_id ${status.identity.deviceId}\n" +
+                "install_id ${status.identity.installId}\n" +
+                "cdid ${status.identity.cdid}\n\n" +
+                "播放时直接复用这份身份，不再注册新设备。" +
+                "同一份身份不要和官方客户端同时播放。"
+        IdentityStatus.NoPermission ->
+            "Android 11 起，应用读 /sdcard/hgtv/ 这类共享目录需要「所有文件访问」权限。" +
+                "没有这个权限时，系统会把目录对你隐藏——文件明明放着也读不到，而且不报错。\n\n" +
+                "开启后回到 HGTV 会重新读取。"
+        IdentityStatus.NotConfigured ->
+            "把 device-identity.txt 放到 /sdcard/hgtv/ 目录下即可生效。文件内容三行：\n\n" +
+                "device_id=...\n" +
+                "install_id=...\n" +
+                "cdid=...\n\n" +
+                "也可以放在这个不需要权限的位置：\n" +
+                (com.hgtv.core.DeviceIdentityFile.fallbacks.firstOrNull()?.absolutePath ?: "应用私有目录")
+    }
 
 @Composable
 private fun SettingTitle(text: String) {

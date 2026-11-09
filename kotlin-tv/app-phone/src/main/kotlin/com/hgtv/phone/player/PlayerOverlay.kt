@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.phone.player
 
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -30,8 +32,6 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Slider
-import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -42,9 +42,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.CornerRadius
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -164,10 +168,11 @@ fun PlayerControls(
                 .background(
                     Brush.verticalGradient(listOf(Color.Transparent, Color(0xCC000000)))
                 )
-                .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
-            SeekBar(position = position, duration = duration, onSeek = onSeek)
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Row(
+                Modifier.padding(start = 4.dp, end = 8.dp, top = 4.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
                 IconButton(onClick = onPlayPause) {
                     Icon(
                         if (playing) Icons.Filled.Pause else Icons.Filled.PlayArrow,
@@ -180,6 +185,13 @@ fun PlayerControls(
                         Icon(Icons.Filled.SkipNext, contentDescription = "下一集", tint = Color.White)
                     }
                 }
+                Text(
+                    "${formatDuration(position)} / ${formatDuration(duration)}",
+                    color = Color(0xCCFFFFFF),
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    modifier = Modifier.padding(start = 2.dp),
+                )
                 Spacer(Modifier.weight(1f))
                 ControlChip(
                     icon = Icons.Filled.Subtitles,
@@ -200,6 +212,8 @@ fun PlayerControls(
                     onClick = onSpeed,
                 )
             }
+            // 进度条贴在屏幕最下沿：2dp 一条线，触摸区域仍是 16dp，拖动与点击都能用。
+            SeekBar(position = position, duration = duration, onSeek = onSeek)
         }
     }
 }
@@ -238,7 +252,11 @@ private fun ControlChip(
 }
 
 /**
- * 进度条。
+ * 贴在最下方的细进度条。
+ *
+ * 用 Slider 做不到「一条 2dp 的线」：Material3 的 Slider 自带 44dp 的触摸区与滑块，
+ * 放在屏幕最底部会顶出一大块黑色。这里自绘两条线加一个点，触摸区仍然是 16dp，
+ * 点击跳转和拖动都支持。
  *
  * 拖动期间用本地值，松手才 seek：播放位置每 250ms 刷新一次，直接绑控制器会让滑块
  * 在手指下面被拽回去。
@@ -248,39 +266,59 @@ private fun SeekBar(position: Long, duration: Long, onSeek: (Long) -> Unit) {
     var dragging by remember { mutableStateOf(false) }
     var draft by remember { mutableFloatStateOf(0f) }
     val total = duration.coerceAtLeast(1L).toFloat()
-    val shown = if (dragging) draft else position.toFloat().coerceIn(0f, total)
-    Column {
-        Slider(
-            value = shown,
-            onValueChange = {
-                dragging = true
-                draft = it
-            },
-            onValueChangeFinished = {
-                dragging = false
-                onSeek(draft.toLong())
-            },
-            valueRange = 0f..total,
-            colors =
-                SliderDefaults.colors(
-                    thumbColor = Palette.Accent,
-                    activeTrackColor = Palette.Accent,
-                    inactiveTrackColor = Color(0x4DFFFFFF),
-                ),
-            modifier = Modifier.fillMaxWidth().height(28.dp),
+    val shown = (if (dragging) draft else position.toFloat()).coerceIn(0f, total)
+    val fraction = shown / total
+
+    Canvas(
+        Modifier.fillMaxWidth()
+            .height(16.dp)
+            .pointerInput(total) {
+                detectTapGestures { offset ->
+                    onSeek((offset.x / size.width.coerceAtLeast(1) * total).toLong())
+                }
+            }
+            .pointerInput(total) {
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        dragging = true
+                        draft =
+                            (offset.x / size.width.coerceAtLeast(1) * total).coerceIn(0f, total)
+                    },
+                    onHorizontalDrag = { _, amount ->
+                        draft =
+                            (draft + amount / size.width.coerceAtLeast(1) * total)
+                                .coerceIn(0f, total)
+                    },
+                    onDragEnd = {
+                        dragging = false
+                        onSeek(draft.toLong())
+                    },
+                    onDragCancel = { dragging = false },
+                )
+            }
+    ) {
+        val centerY = size.height / 2f
+        val thickness = 2.dp.toPx()
+        drawRoundRect(
+            color = Color(0x4DFFFFFF),
+            topLeft = Offset(0f, centerY - thickness / 2),
+            size = Size(size.width, thickness),
+            cornerRadius = CornerRadius(thickness / 2),
         )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(
-                formatDuration(shown.toLong()),
-                color = Color(0xCCFFFFFF),
-                fontSize = 11.sp,
-            )
-            Text(
-                formatDuration(duration),
-                color = Color(0xCCFFFFFF),
-                fontSize = 11.sp,
+        if (fraction > 0f) {
+            drawRoundRect(
+                color = Palette.Accent,
+                topLeft = Offset(0f, centerY - thickness / 2),
+                size = Size(size.width * fraction, thickness),
+                cornerRadius = CornerRadius(thickness / 2),
             )
         }
+        // 2dp 的线在亮画面上会看不见，用一个点标出当前位置。
+        drawCircle(
+            color = Palette.Accent,
+            radius = if (dragging) 4.dp.toPx() else 2.5.dp.toPx(),
+            center = Offset(size.width * fraction, centerY),
+        )
     }
 }
 

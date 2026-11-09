@@ -48,19 +48,19 @@ class EpisodeMediaSourceFactory(
     /** 打开（或复用）这一集的流；由加载线程调用，允许阻塞。 */
     internal fun video(episodeId: String, quality: Int, ahead: List<String>): RemoteVideo {
         val key = "$episodeId/$quality"
-        val stream =
-            synchronized(lock) {
-                val cached = opened
-                if (cached != null && openedKey == key) cached
-                else {
-                    cached?.close()
-                    opener(episodeId, quality, ahead).also {
-                        opened = it
-                        openedKey = key
-                    }
-                }
-            }
-        return stream.video
+        synchronized(lock) {
+            val cached = opened
+            if (cached != null && openedKey == key) return cached.video
+            // 先把状态摘干净再换流：opener 抛异常时不能让 opened 指着一个已经 close 的旧流，
+            // 否则下一次同 key 的请求会拿到关闭的连接，表现就是「重试也一直 source error」。
+            opened = null
+            openedKey = null
+            cached?.close()
+            val fresh = opener(episodeId, quality, ahead)
+            opened = fresh
+            openedKey = key
+            return fresh.video
+        }
     }
 
     /** 播放器释放时调用：把底层连接一起关掉。 */

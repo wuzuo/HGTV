@@ -27,6 +27,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -47,7 +48,9 @@ import androidx.media3.session.MediaController
 import androidx.media3.ui.PlayerView
 import com.hgtv.core.CloudProgress
 import com.hgtv.core.Danmaku
+import com.hgtv.core.DeviceIdentityMonitor
 import com.hgtv.core.PlaybackQuality
+import com.hgtv.core.RecoveryBudget
 import com.hgtv.core.Series
 import com.hgtv.phone.PhoneApp
 import com.hgtv.phone.data.PhoneSettings
@@ -82,7 +85,6 @@ fun PlayerScreen(
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val window = remember(activity) { PlayerWindow(activity) }
-    val audio = remember(context) { audioManager(context) }
 
     val settings = PhoneApp.settings
     val library = PhoneApp.library
@@ -113,6 +115,9 @@ fun PlayerScreen(
     var buffering by remember { mutableStateOf(true) }
     var failure by remember { mutableStateOf<String?>(null) }
     var attempt by remember { mutableIntStateOf(0) }
+    /** 一集内的自动重试预算：取流失败多半是瞬时的（换设备身份、域名抖动），先自己救三次。 */
+    val recovery = remember { RecoveryBudget() }
+    val scope = rememberCoroutineScope()
     var controlsVisible by remember { mutableStateOf(true) }
     var sheet by remember { mutableStateOf<PlayerSheet?>(null) }
     var hint by remember { mutableStateOf<String?>(null) }
@@ -136,17 +141,8 @@ fun PlayerScreen(
      */
     var resumeToApply by remember { mutableLongStateOf(-1L) }
 
-    var brightness by remember { mutableFloatStateOf(systemBrightness(context)) }
-    var volume by remember {
-        mutableFloatStateOf(
-            (audio?.getStreamVolume(android.media.AudioManager.STREAM_MUSIC) ?: 0).toFloat()
-        )
-    }
-    val volumeMax =
-        remember(audio) {
-            (audio?.getStreamMaxVolume(android.media.AudioManager.STREAM_MUSIC) ?: 1)
-                .coerceAtLeast(1)
-        }
+    /** 上下滑换集时的提示（「松开播放下一集」），松手即清。 */
+    var episodeHint by remember { mutableStateOf<String?>(null) }
 
     val episodeId = episodes.getOrNull(index).orEmpty()
 
@@ -206,6 +202,9 @@ fun PlayerScreen(
             )
         }
     }
+
+    // 换集或换档位就是一次新的取流：重试预算重新算。
+    LaunchedEffect(index, quality) { recovery.reset() }
 
     // 换集 / 换档位 / 重试：重新装一条媒体项。取流由服务里的数据源在加载线程完成。
     LaunchedEffect(controller, index, quality, attempt) {
@@ -276,7 +275,22 @@ fun PlayerScreen(
 
                 override fun onPlayerError(error: PlaybackException) {
                     buffering = false
-                    failure = error.message?.take(120) ?: "播放失败（${error.errorCodeName}）"
+                    val detail = describePlaybackError(error)
+                    val wait = recovery.delayMillis
+                    if (wait != null && recovery.consume()) {
+                        // 取流失败一大半是瞬时的：注册身份这一集刚好被服务端判重、域名抖动、
+                        // 连接被掐。先按 1s / 2.5s / 5s 自己救三次，别让用户看一行英文就没了。
+                        failure = "$detail\n${wait / 1000f} 秒后自动重试（${recovery.attempts}/3）"
+                        android.util.Log.w("HGTV", "playback error, retry ${recovery.attempts}/3: $detail")
+                        scope.launch {
+                            delay(wait)
+                            pendingSeek = c.currentPosition.takeIf { it > 0 } ?: position
+                            attempt += 1
+                        }
+                    } else {
+                        failure = detail
+                        android.util.Log.e("HGTV", "playback failed: $detail", error)
+                    }
                 }
 
                 // 短剧多为 9:16，横屏视频才转横屏；尺寸一知道就定下来，避免中途转向。
@@ -430,6 +444,19 @@ fun PlayerScreen(
         hint = if (deltaMs > 0) "快进 10 秒" else "快退 10 秒"
     }
 
+    /** 上下滑换集：越界时只提示，不动当前播放。 */
+    fun switchEpisode(delta: Int) {
+        val next = index + delta
+        if (next !in episodes.indices) {
+            hint = if (delta > 0) "已经是最后一集" else "已经是第一集"
+            return
+        }
+        // 上一集按「看完」记：换回来时不至于又从中间开始。
+        persistProgress(completed = delta > 0, at = if (delta > 0) duration else null)
+        index = next
+        hint = "第 ${next + 1} 集"
+    }
+
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         androidx.compose.ui.viewinterop.AndroidView(
             factory = { ctx ->
@@ -476,25 +503,29 @@ fun PlayerScreen(
                         dragSeekMs = Float.NaN
                         seekBaseMs = Float.NaN
                     },
-                    onBrightnessDrag = { delta ->
-                        brightness = (brightness + delta).coerceIn(0.01f, 1f)
-                        applyBrightness(activity, brightness)
-                        hint = "亮度 ${(brightness * 100).roundToInt()}%"
+                    // 上滑下一集、下滑上一集：竖屏短剧最顺手的操作，和短视频一致。
+                    // 亮度/音量不再用手势——画面里画不出一条分界线，系统音量键更直接。
+                    onEpisodeDrag = { fraction ->
+                        episodeHint =
+                            when {
+                                fraction <= -EPISODE_SWIPE -> "松开播放下一集"
+                                fraction >= EPISODE_SWIPE -> "松开播放上一集"
+                                else -> null
+                            }
                     },
-                    onVolumeDrag = { delta ->
-                        volume = (volume + delta * volumeMax).coerceIn(0f, volumeMax.toFloat())
-                        audio?.setStreamVolume(
-                            android.media.AudioManager.STREAM_MUSIC,
-                            volume.roundToInt(),
-                            0,
-                        )
-                        hint = "音量 ${(volume / volumeMax * 100).roundToInt()}%"
+                    onEpisodeCommit = { fraction ->
+                        episodeHint = null
+                        when {
+                            fraction <= -EPISODE_SWIPE -> switchEpisode(1)
+                            fraction >= EPISODE_SWIPE -> switchEpisode(-1)
+                        }
                     },
-                    onDragEnd = {},
                 )
         )
 
-        if (!dragSeekMs.isNaN()) {
+        if (episodeHint != null) {
+            PlayerHint(episodeHint!!)
+        } else if (!dragSeekMs.isNaN()) {
             PlayerHint("${formatDuration(dragSeekMs.toLong())} / ${formatDuration(duration)}")
         } else if (hint != null) {
             PlayerHint(hint!!)
@@ -512,6 +543,18 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                     )
+                    // 没有本地设备身份时，「空响应」基本都会撞上：注册身份只放行一次。
+                    // 这里给一句能直接照做的提示，比让用户反复点重试有用。
+                    if (DeviceIdentityMonitor.peek() == null) {
+                        Text(
+                            "没有读到设备身份配置，每集都要重新注册设备。" +
+                                "可以在「我的 → 播放与存储设置 → 播放身份」里放一份 device-identity.txt。",
+                            color = Palette.TextTertiary,
+                            style = MaterialTheme.typography.labelSmall,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(top = 10.dp),
+                        )
+                    }
                     Text(
                         "点这里重试",
                         color = Palette.Accent,
@@ -520,7 +563,11 @@ fun PlayerScreen(
                             .padding(top = 12.dp)
                             .clip(RoundedCornerShape(6.dp))
                             .background(Color(0x33FFFFFF))
-                            .clickable { attempt += 1 }
+                            .clickable {
+                                // 手动重试也把自动重试预算还回去：用户主动点了，就再给三次机会。
+                                recovery.reset()
+                                attempt += 1
+                            }
                             .padding(horizontal = 14.dp, vertical = 8.dp),
                     )
                 }
@@ -630,5 +677,36 @@ fun PlayerScreen(
                 onDismiss = { sheet = null },
             )
         null -> Unit
+    }
+}
+
+/**
+ * 把 ExoPlayer 的异常翻成用户看得懂的一句话。
+ *
+ * 数据源抛的 IOException 会被 ProgressiveMediaSource 统一包成 `Source error`，
+ * 真正的原因（「播放接口暂时返回空响应，请稍后重试」这类）藏在 cause 链最深处，
+ * 直接显示 `error.message` 就只剩一行英文，既不知道是哪一步失败也不知道该怎么办。
+ */
+private fun describePlaybackError(error: PlaybackException): String {
+    val chain = generateSequence(error as Throwable) { it.cause }.toList()
+    val reason =
+        chain
+            .mapNotNull { it.message?.trim()?.takeIf { message -> message.isNotEmpty() } }
+            .lastOrNull { !it.equals("Source error", ignoreCase = true) }
+    return when (error.errorCode) {
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_FAILED,
+        PlaybackException.ERROR_CODE_IO_NETWORK_CONNECTION_TIMEOUT -> "网络连接不上，检查网络后重试"
+        PlaybackException.ERROR_CODE_IO_BAD_HTTP_STATUS ->
+            "播放地址返回异常" + (reason?.let { "：$it" }.orEmpty())
+        PlaybackException.ERROR_CODE_IO_FILE_NOT_FOUND -> "视频资源不存在或已下架"
+        PlaybackException.ERROR_CODE_DECODER_INIT_FAILED,
+        PlaybackException.ERROR_CODE_DECODING_FAILED -> "这台设备解不了这个清晰度，换低一档试试"
+        else ->
+            when {
+                reason == null -> "播放失败（${error.errorCodeName}）"
+                // 中文原因直接用；剩下的英文兜底加一句上下文，至少知道是取流那一步。
+                reason.any { it.code in 0x4E00..0x9FFF } -> reason.take(120)
+                else -> "取流失败：${reason.take(100)}"
+            }
     }
 }
