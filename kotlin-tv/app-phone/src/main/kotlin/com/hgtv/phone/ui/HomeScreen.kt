@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -52,6 +53,7 @@ import coil.compose.AsyncImage
 import com.hgtv.core.Series
 import com.hgtv.phone.FeedStore
 import com.hgtv.phone.PhoneApp
+import com.hgtv.phone.R
 import com.hgtv.phone.SearchStore
 
 /** 首页的三个页签。搜索与「我的」只是切内容，不另开返回栈。 */
@@ -143,7 +145,11 @@ private fun RecommendScreen(
             Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically,
         ) {
-            Text("红果短剧", style = MaterialTheme.typography.titleMedium, color = Palette.TextPrimary)
+            Text(
+                stringResource(R.string.app_name),
+                style = MaterialTheme.typography.titleMedium,
+                color = Palette.TextPrimary,
+            )
             Box(Modifier.weight(1f))
             Text("推荐", style = MaterialTheme.typography.bodySmall, color = Palette.Accent)
         }

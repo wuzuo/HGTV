@@ -1,3 +1,4 @@
 <resources>
-    <string name="app_name">红果短剧</string>
+    <!-- 与电视端一致：桌面名称、通知、安装器都用这个名字。 -->
+    <string name="app_name">HGTV</string>
 </resources>
