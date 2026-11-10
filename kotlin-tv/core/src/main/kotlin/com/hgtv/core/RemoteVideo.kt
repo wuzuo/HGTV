@@ -6,6 +6,7 @@ package com.hgtv.core
 import java.io.Closeable
 import java.io.IOException
 import java.io.InputStream
+import java.io.OutputStream
 import okhttp3.Call
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -227,12 +228,49 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
     }
 
     /**
-     * Coded video dimensions after prepare(); null before prepare or when the header has no
+     * Decoded video dimensions after prepare(); null before prepare or when the header has no
      * readable video track.
      */
     fun trackInfo(): VideoTracks.Track? {
         if (!::prepared.isInitialized) return null
         return VideoTracks.videoTrack(prepared.header)
+    }
+
+    /**
+     * 解密后头里的视频样本表，供 BVC2 软解按样本顺序取流；[prepare] 之前返回 null。
+     *
+     * 用 [prepared] 而不是重新读一次远端：那里的 header 已经把 `encv` 还原成原始编码标签、
+     * 中和了 `sinf`，样本表的解析因此不必感知 CENC。
+     */
+    fun sampleTable(): Mp4SampleTable.Table? {
+        if (!::prepared.isInitialized) return null
+        return Mp4SampleTable.parse(prepared.header)
+    }
+
+    /** 修正过的文件头（`encv`→原编码、`sinf` 已清零），用于拼出 FFmpeg 能读的明文容器。 */
+    fun repairedHeader(): ByteArray? {
+        if (!::prepared.isInitialized) return null
+        return prepared.header
+    }
+
+    /**
+     * 把整段资源解密后顺序写到 [out]，得到一个 FFmpeg 能直接当普通 MP4 读的明文文件。
+     *
+     * 按 8MB 分段（[_newCall] 的单次上限）：若按播放路径的 1MB 走，一百多 MB 的资源会被拆成
+     * 上百次 Range 往返，光起播就要多等十几秒。头区间由 [MediaCrypto.decryptInto] 用修正过的
+     * header 覆盖，`encv`→原编码、`sinf` 清零一并完成。
+     */
+    fun exportDecrypted(out: OutputStream) {
+        check(::prepared.isInitialized)
+        var position = 0L
+        while (position < total) {
+            val length = minOf(EXPORT_SPAN.toLong(), total - position).toInt()
+            val raw = range(position, position + length - 1).bytes
+            val buffer = ByteArray(raw.size)
+            MediaCrypto.decryptInto(raw, 0, raw.size, position, info.key, prepared, buffer, 0)
+            out.write(buffer)
+            position += raw.size
+        }
     }
 
     override fun close() {
@@ -241,5 +279,10 @@ class RemoteVideo(private val http: OkHttpClient, val info: StreamInfo) : Closea
             calls.toList().forEach { it.cancel() }
             calls.clear()
         }
+    }
+
+    private companion object {
+        /** 单次 Range 上限：比 [newCall] 允许的 8MB 少 1 字节。 */
+        const val EXPORT_SPAN = 8 * 1024 * 1024 - 1
     }
 }

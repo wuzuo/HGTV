@@ -45,6 +45,11 @@ Windows 10/11 x64 桌面客户端，使用 Flutter + Material 3 重写界面，�
 
 无需安装 Java、VLC 或 .NET 运行时：ZIP 内自带精简 JRE（jlink）与 libmpv。
 
+BVC2（H.266）片源需要额外一个 FFmpeg 才能播：客户端按 `HGTV_FFMPEG` 环境变量 →
+程序目录 `ffmpeg/ffmpeg.exe` → `PATH` → 常见安装位置的顺序查找。找不到时只有这一集会
+提示换一集，其余片源不受影响，也不影响正常播放——绝大多数片源走服务端的 HEVC 档位，
+根本用不到它。
+
 ## 构建
 
 前置条件：

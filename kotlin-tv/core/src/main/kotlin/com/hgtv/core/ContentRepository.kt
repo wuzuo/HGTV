@@ -173,8 +173,14 @@ class EmptyPlaybackResponseException : IOException("播放接口暂时返回空�
  * 和「拿不到播放信息」分开：这是确定性结论，重试、换清晰度都不会变，界面应该直接让用户
  * 换一集；混在 [IOException] 里只会得到一句「稍后再试」，让人对着同一集反复重试。
  */
-class UnsupportedCodecException(val codecs: List<String>) :
-    IOException("这一集只有 BVC2（H.266）编码，当前设备没有对应解码器，请换一集")
+class UnsupportedCodecException(
+    val codecs: List<String>,
+    /**
+     * 整集唯一可用的 BVC2 档位（取最高清那条），供有软解能力的端做兜底；
+     * 桌面端拿它起 FFmpeg 软解转码，取不到时为 null。
+     */
+    val fallback: StreamInfo? = null,
+) : IOException("这一集只有 BVC2（H.266）编码，当前设备没有对应解码器，请换一集")
 
 /** 本端（ExoPlayer + MediaCodec）解不了的编码：字节自研 BVC2，没有公开的系统解码器。 */
 private val UNPLAYABLE_CODECS = setOf("bytevc2", "bvc2")
@@ -1040,11 +1046,52 @@ constructor(
             // 否则只剩一句「稍后再试」，用户会对同一集反复重试。
             val codecs = offeredRows.map { it.second.str("codec_type").lowercase() }.distinct()
             if (codecs.isNotEmpty() && codecs.all { it in UNPLAYABLE_CODECS })
-                throw UnsupportedCodecException(codecs)
+                throw UnsupportedCodecException(codecs, softRendition(offeredRows, seed))
             throw IOException("这一集没有可播放的清晰度，请稍后再试或选择其他剧集")
         }
         return StreamLadder(renditions)
     }
+
+    /**
+     * 从被过滤掉的档位里挑一条最高清的 BVC2，交给有软解能力的端（桌面 bridge）兜底。
+     *
+     * 地址解不出、缺 key 时返回 null，调用方照旧抛原来的异常——兜底失败不该掩盖真正的原因。
+     */
+    private fun softRendition(
+        rows: List<Pair<String, JSONObject>>,
+        seed: String,
+    ): StreamInfo? =
+        rows
+            .filter { it.second.str("codec_type").lowercase() in UNPLAYABLE_CODECS }
+            .mapNotNull { (key, row) ->
+                runCatching {
+                        var url = cleanUrl(row.str("main_url"))
+                        if (seed.isNotEmpty()) url = MediaCrypto.decryptUrl(url, decode64(seed))
+                        if (!url.startsWith("https://") && !url.startsWith("http://"))
+                            return@runCatching null
+                        val quality =
+                            qualityNumber(
+                                row.str("quality_desc").ifEmpty {
+                                    row.str("height").ifEmpty {
+                                        row.str("vheight").ifEmpty {
+                                            row.str("quality").ifEmpty { key }
+                                        }
+                                    }
+                                }
+                            )
+                        quality to
+                            StreamInfo(
+                                url,
+                                row.str("spade_a")
+                                    .takeIf { it.isNotEmpty() }
+                                    ?.let(MediaCrypto::deriveKey),
+                                if (quality > 0) "${quality}P" else "自动",
+                            )
+                    }
+                    .getOrNull()
+            }
+            .maxByOrNull { it.first }
+            ?.second
 
     private fun dimension(o: JSONObject, vararg keys: String): Int? {
         for (key in keys) {
