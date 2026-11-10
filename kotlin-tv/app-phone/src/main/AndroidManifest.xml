@@ -9,6 +9,8 @@
     <!-- 后台播放：播放器放在 MediaSessionService 里，切到桌面后由前台服务继续放。 -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK"/>
+    <!-- 看剧时不发通知，所以不主动申请；保留声明是因为退到后台继续播放时，
+         前台服务的保活通知需要它才能在部分机型上正常挂出。 -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
     <!-- 读取 /sdcard/hgtv/device-identity.txt（与电视端同一个位置）。
@@ -48,7 +50,8 @@
             </intent-filter>
         </activity>
 
-        <!-- 后台播放宿主：媒体通知与锁屏控制都由 media3 的 MediaSessionService 提供。 -->
+        <!-- 播放宿主：播放器与 MediaSession 都在这里。通知栏默认不挂常驻控制条，
+             只有退到后台继续播放时才用它做前台服务保活。 -->
         <service
             android:name=".playback.PlaybackService"
             android:exported="false"

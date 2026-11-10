@@ -25,8 +25,9 @@ import kotlinx.coroutines.withContext
  * 数据模型与序列化直接用 `:core` 里的 [LibraryIndex] / [LibraryBackup]（TV 端也是这套，
  * 导出文件因此互通），这里只补一层 Android 存储与 Compose 可观察状态。
  *
- * 线程约定：`index` 只在主线程读写；写盘在单线程执行器上串行进行，交给它的是一份
- * 主线程编码好的 JSON 字符串，避免磁盘线程读到写了一半的内存结构。
+ * 线程约定：`index` 只在主线程读写；写盘在单线程执行器上串行进行。交给磁盘线程的是
+ * 主线程取的 [BackupData] 快照——[LibraryIndex] 内部全部用「替换」而非原地修改，
+ * 所以快照里的列表在交给写线程之后不会再变，编码读到的一定是完整一致的一份。
  */
 @Stable
 class PhoneLibrary(context: Context) {
@@ -35,7 +36,7 @@ class PhoneLibrary(context: Context) {
     private val writer =
         Executors.newSingleThreadExecutor { task -> Thread(task, "hgtv-phone-library") }
     private val writeLock = Any()
-    private var pendingJson: String? = null
+    private var pending: BackupData? = null
     private var writing = false
 
     private var index: LibraryIndex? = null
@@ -176,17 +177,21 @@ class PhoneLibrary(context: Context) {
     /**
      * 立刻把当前状态排进写盘队列。
      *
-     * 同一时刻只跑一个写任务；写的过程中又有新快照时，用 dirty 标记让它再跑一轮，
+     * 同一时刻只跑一个写任务；写的过程中又有新快照时，用 pending 槽让它再跑一轮，
      * 否则连续两次收藏很可能只落盘一次。
+     *
+     * 序列化整个片库（收藏、历史、搜索、已看）在几百 KB 量级，放在主线程会在收藏、
+     * 换集的瞬间掉帧——那几毫秒正好压在转场动画上。所以主线程只取快照（几条列表的
+     * 打包，不复制内容），编码与写盘都交给写线程。
      */
     private fun persist() {
         val current = index ?: return
-        val json =
-            runCatching { LibraryBackup.encode(current.snapshot()) }
-                .onFailure { Log.w(TAG, "本地片库编码失败", it) }
+        val snapshot =
+            runCatching { current.snapshot() }
+                .onFailure { Log.w(TAG, "本地片库取快照失败", it) }
                 .getOrNull() ?: return
         synchronized(writeLock) {
-            pendingJson = json
+            pending = snapshot
             if (writing) return
             writing = true
         }
@@ -194,12 +199,16 @@ class PhoneLibrary(context: Context) {
             while (true) {
                 val next =
                     synchronized(writeLock) {
-                        val value = pendingJson
-                        pendingJson = null
+                        val value = pending
+                        pending = null
                         if (value == null) writing = false
                         value
                     } ?: break
-                val ok = prefs.edit().putString(KEY_SNAPSHOT, next).commit()
+                val json =
+                    runCatching { LibraryBackup.encode(next) }
+                        .onFailure { Log.w(TAG, "本地片库编码失败", it) }
+                        .getOrNull() ?: continue
+                val ok = prefs.edit().putString(KEY_SNAPSHOT, json).commit()
                 if (!ok) Log.w(TAG, "本地片库写入失败，等待下一次变更重试")
             }
         }

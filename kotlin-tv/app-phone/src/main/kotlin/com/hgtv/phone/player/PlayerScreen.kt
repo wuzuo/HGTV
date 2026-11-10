@@ -1,20 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.phone.player
 
-import android.Manifest
 import android.app.PictureInPictureParams
 import android.content.pm.PackageManager
 import android.os.Build
 import android.util.Rational
 import androidx.activity.compose.BackHandler
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -34,10 +34,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
-import androidx.core.content.ContextCompat
 import androidx.core.os.bundleOf
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
@@ -54,6 +54,7 @@ import com.hgtv.core.PlaybackQuality
 import com.hgtv.core.RecoveryBudget
 import com.hgtv.core.Series
 import com.hgtv.phone.PhoneApp
+import com.hgtv.phone.R
 import com.hgtv.phone.data.PhoneSettings
 import com.hgtv.phone.media.CommentItem
 import com.hgtv.phone.media.CommentsLoader
@@ -61,6 +62,7 @@ import com.hgtv.phone.media.DanmakuLoader
 import com.hgtv.phone.playback.EpisodeMediaSourceFactory
 import com.hgtv.phone.playback.PlaybackConnection
 import com.hgtv.phone.ui.Palette
+import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -69,8 +71,8 @@ import kotlinx.coroutines.launch
  * 全屏播放页。
  *
  * 播放器本体在 [com.hgtv.phone.playback.PlaybackService] 里，这里拿到的是
- * [MediaController]；它同时也是通知栏、锁屏与画中画看到的那个播放器，所以切到桌面、
- * 息屏、进小窗都不会中断。
+ * [MediaController]；它同时也是锁屏与画中画看到的那个播放器，所以切到桌面、
+ * 息屏、进小窗都不会中断。通知栏不挂常驻控制条。
  *
  * 控制层是自绘的（PlayerView 的控制器关掉）：弹幕、手势、清晰度、倍速都要压在画面上，
  * 用系统控制器会互相打架。
@@ -150,25 +152,34 @@ fun PlayerScreen(
     /** 上下滑换集时的提示（「松开播放下一集」），松手即清。 */
     var episodeHint by remember { mutableStateOf<String?>(null) }
 
+    /**
+     * 当前画面是不是横屏。
+     *
+     * 与 [PlayerWindow.setLandscape] 同一个口径：由视频本身的比例决定，不是设备朝向。
+     * 手势语义按它分派——竖屏单击暂停，横屏双击暂停。
+     */
+    var landscape by remember { mutableStateOf(false) }
+
+    /** 换集拖动的跟手位移（像素）：手指走多少画面跟多少，松手归零。 */
+    var episodeOffset by remember { mutableFloatStateOf(0f) }
+
+    /** 未达阈值松手后的回弹。 */
+    var episodeSettling by remember { mutableStateOf(false) }
+
+    /**
+     * 缓冲超过一小会儿才转圈。
+     *
+     * 换集要重新取流，那一秒左右的等待如果不画点东西，画面停在上集最后一帧看着像卡死；
+     * 但刚起播就闪一下转圈更烦，所以短于 250ms 的缓冲不显示。
+     */
+    var showLoading by remember { mutableStateOf(false) }
+
     val episodeId = episodes.getOrNull(index).orEmpty()
 
     // 播放页独占屏幕：横屏、常亮、隐藏系统栏；退出时全部还原。
     DisposableEffect(window) {
         window.enter()
         onDispose { window.exit() }
-    }
-
-    // 通知权限（Android 13+）：媒体通知是后台播放的门面，拒绝了也不影响播放。
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-        val launcher =
-            rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
-        LaunchedEffect(Unit) {
-            if (ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
-                PackageManager.PERMISSION_GRANTED
-            ) {
-                launcher.launch(Manifest.permission.POST_NOTIFICATIONS)
-            }
-        }
     }
 
     /** 这一集该从哪开始：本机进度优先，其次云端进度；都对不上就从头。 */
@@ -318,7 +329,9 @@ fun PlayerScreen(
                 // 短剧多为 9:16，横屏视频才转横屏；尺寸一知道就定下来，避免中途转向。
                 override fun onVideoSizeChanged(videoSize: androidx.media3.common.VideoSize) {
                     if (videoSize.width > 0 && videoSize.height > 0) {
-                        window.setLandscape(videoSize.width > videoSize.height)
+                        val wide = videoSize.width > videoSize.height
+                        landscape = wide
+                        window.setLandscape(wide)
                     }
                 }
             }
@@ -457,15 +470,6 @@ fun PlayerScreen(
         }
     }
 
-    fun seekBy(deltaMs: Long) {
-        val c = controller ?: return
-        val total = if (duration > 0) duration else c.duration.coerceAtLeast(0)
-        val target = (c.currentPosition + deltaMs).coerceIn(0L, if (total > 0) total else 0L)
-        c.seekTo(target)
-        position = target
-        hint = if (deltaMs > 0) "快进 10 秒" else "快退 10 秒"
-    }
-
     /** 上下滑换集：越界时只提示，不动当前播放。 */
     fun switchEpisode(delta: Int) {
         val next = index + delta
@@ -479,27 +483,60 @@ fun PlayerScreen(
         hint = "第 ${next + 1} 集"
     }
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
-        androidx.compose.ui.viewinterop.AndroidView(
-            factory = { ctx ->
-                PlayerView(ctx).apply {
-                    useController = false
-                    setShowBuffering(PlayerView.SHOW_BUFFERING_NEVER)
-                    setShutterBackgroundColor(android.graphics.Color.BLACK)
-                }
-            },
-            update = { it.player = controller },
-            modifier = Modifier.fillMaxSize(),
-        )
+    // 缓冲超过 250ms 才转圈，短于这个时长不闪。
+    LaunchedEffect(buffering) {
+        if (!buffering) {
+            showLoading = false
+        } else {
+            delay(250)
+            showLoading = true
+        }
+    }
 
-        if (danmakuOn && danmaku.isNotEmpty() && !PipBridge.inPip) {
-            DanmakuLayer(
-                items = danmaku,
-                positionMillis = { controller?.currentPosition ?: 0L },
-                playing = playing,
-                scale = danmakuScale,
+    // 没滑够就松手：画面回弹。固定时长比弹簧干脆，换集方向的手势本来就快。
+    LaunchedEffect(episodeSettling) {
+        if (!episodeSettling) return@LaunchedEffect
+        animate(episodeOffset, 0f, animationSpec = tween(durationMillis = 180)) { value, _ ->
+            episodeOffset = value
+        }
+        episodeOffset = 0f
+        episodeSettling = false
+    }
+
+    Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // 画面与弹幕一起跟手：换集拖动时整层随手指走，手指松开或换集完成时归零。
+        Box(
+            Modifier
+                .fillMaxSize()
+                .graphicsLayer {
+                    translationY = episodeOffset
+                    // 拉得越远越淡，滑过阈值时能看出「这一下算数」。
+                    val lift =
+                        if (size.height > 0f) (abs(episodeOffset) / size.height).coerceIn(0f, 1f)
+                        else 0f
+                    alpha = 1f - lift * 0.35f
+                },
+        ) {
+            androidx.compose.ui.viewinterop.AndroidView(
+                factory = { ctx ->
+                    // 用 XML 里的 PlayerView：surface_type 只能在布局属性里指定，
+                    // 而跟手平移需要 TextureView（SurfaceView 的画面不跟 View 的变换走）。
+                    android.view.LayoutInflater.from(ctx)
+                        .inflate(R.layout.player_view, null) as PlayerView
+                },
+                update = { it.player = controller },
                 modifier = Modifier.fillMaxSize(),
             )
+
+            if (danmakuOn && danmaku.isNotEmpty() && !PipBridge.inPip) {
+                DanmakuLayer(
+                    items = danmaku,
+                    positionMillis = { controller?.currentPosition ?: 0L },
+                    playing = playing,
+                    scale = danmakuScale,
+                    modifier = Modifier.fillMaxSize(),
+                )
+            }
         }
 
         // 手势层：始终在，控制层收起后也能点出来。
@@ -507,8 +544,26 @@ fun PlayerScreen(
             Modifier
                 .fillMaxSize()
                 .playerGestures(
-                    onTap = { controlsVisible = !controlsVisible },
-                    onDoubleTap = { fraction -> seekBy(if (fraction < 0.5f) -10_000L else 10_000L) },
+                    // 竖屏单击就暂停（不注册双击，单击不必等 300ms 超时）；
+                    // 横屏单击显隐控制层，双击暂停。
+                    doubleTapToPause = landscape,
+                    onSingleTap = {
+                        if (landscape) {
+                            controlsVisible = !controlsVisible
+                        } else {
+                            controller?.let { c ->
+                                if (c.isPlaying) c.pause() else c.play()
+                                // 暂停时把控制层带出来：停下了还看不到进度条，会以为卡住了。
+                                controlsVisible = true
+                            }
+                        }
+                    },
+                    onDoubleTap = {
+                        controller?.let { c ->
+                            if (c.isPlaying) c.pause() else c.play()
+                            controlsVisible = true
+                        }
+                    },
                     onSeekDrag = { deltaMs ->
                         val total = duration.toFloat()
                         if (total > 0) {
@@ -527,7 +582,10 @@ fun PlayerScreen(
                     },
                     // 上滑下一集、下滑上一集：竖屏短剧最顺手的操作，和短视频一致。
                     // 亮度/音量不再用手势——画面里画不出一条分界线，系统音量键更直接。
-                    onEpisodeDrag = { fraction ->
+                    onEpisodeDrag = { offsetPx, fraction ->
+                        // 手指又按下去了：停掉上一次的回弹，否则动画会和手指抢位置。
+                        if (episodeSettling) episodeSettling = false
+                        episodeOffset = offsetPx
                         episodeHint =
                             when {
                                 fraction <= -EPISODE_SWIPE -> "松开播放下一集"
@@ -538,8 +596,17 @@ fun PlayerScreen(
                     onEpisodeCommit = { fraction ->
                         episodeHint = null
                         when {
-                            fraction <= -EPISODE_SWIPE -> switchEpisode(1)
-                            fraction >= EPISODE_SWIPE -> switchEpisode(-1)
+                            // 换集时直接归零而不是回弹：画面马上要换成新一集，
+                            // 让旧帧再滑一段反而更割裂。
+                            fraction <= -EPISODE_SWIPE -> {
+                                episodeOffset = 0f
+                                switchEpisode(1)
+                            }
+                            fraction >= EPISODE_SWIPE -> {
+                                episodeOffset = 0f
+                                switchEpisode(-1)
+                            }
+                            else -> episodeSettling = true
                         }
                     },
                 )
@@ -551,6 +618,15 @@ fun PlayerScreen(
             PlayerHint("${formatDuration(dragSeekMs.toLong())} / ${formatDuration(duration)}")
         } else if (hint != null) {
             PlayerHint(hint!!)
+        }
+
+        // 换集/换档位的等待：不画点什么，画面停在上集最后一帧就像卡死了。
+        if (showLoading && failure == null && controller != null && !PipBridge.inPip) {
+            CircularProgressIndicator(
+                Modifier.align(Alignment.Center).size(28.dp),
+                color = Palette.Accent,
+                strokeWidth = 2.dp,
+            )
         }
 
         when {

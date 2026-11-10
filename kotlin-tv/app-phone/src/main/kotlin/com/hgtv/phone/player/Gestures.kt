@@ -18,25 +18,31 @@ private const val DRAG_SEEK_SPAN_MS = 120_000f
 internal const val EPISODE_SWIPE = 0.12f
 
 /**
- * 播放页的手势：单击显隐控制层、双击左右半屏快退/快进、左右拖调进度、上下拖换集。
+ * 播放页的手势。
  *
- * 竖屏短剧的操作习惯是「上滑看下一集」，所以竖直方向留给换集，不再用于亮度/音量——
- * 那两个改成系统音量键与下拉控制中心，比在画面里划一条看不见的分界线更好用。
+ * 单击与双击的语义跟着屏幕方向走：
+ * - **竖屏**是刷短剧的姿势，单击直接暂停/继续。[doubleTapToPause] 传 false 时不注册双击
+ *   监听——注册了单击就得等 300ms 双击超时才回调，点一下「顿一下才停」很难受。
+ * - **横屏**是全屏观看，单击显隐控制层，双击暂停。全屏时手指搭在画面上的概率高，
+ *   单击不该改变播放状态。
  *
- * 拖动方向在超过位移阈值后锁定一次，之后不再切换：手指稍微斜一点，进度和换集不会同时触发。
+ * 左右拖调进度、上下拖换集两条拖动始终有效，方向在超过位移阈值后锁定一次，之后不再切换：
+ * 手指稍微斜一点，进度和换集不会同时触发。
  */
 fun Modifier.playerGestures(
-    onTap: () -> Unit,
-    onDoubleTap: (xFraction: Float) -> Unit,
+    doubleTapToPause: Boolean,
+    onSingleTap: () -> Unit,
+    onDoubleTap: () -> Unit,
     onSeekDrag: (deltaMs: Float) -> Unit,
     onSeekCommit: () -> Unit,
-    onEpisodeDrag: (fraction: Float) -> Unit,
+    onEpisodeDrag: (offsetPx: Float, fraction: Float) -> Unit,
     onEpisodeCommit: (fraction: Float) -> Unit,
 ): Modifier =
-    this.pointerInput(Unit) {
+    this.pointerInput(doubleTapToPause) {
             detectTapGestures(
-                onTap = { onTap() },
-                onDoubleTap = { offset -> onDoubleTap(offset.x / size.width.coerceAtLeast(1)) },
+                onTap = { onSingleTap() },
+                // null 表示不认双击：单击立即回调，无需等待双击超时。
+                onDoubleTap = if (doubleTapToPause) ({ _ -> onDoubleTap() }) else null,
             )
         }
         .pointerInput(Unit) {
@@ -59,8 +65,9 @@ fun Modifier.playerGestures(
                     val height = size.height.coerceAtLeast(1)
                     when (axis) {
                         AXIS_SEEK -> onSeekDrag(totalX / width * DRAG_SEEK_SPAN_MS)
-                        // 上滑（负位移）下一集，与短视频一致；拖过阈值才提示，避免误触。
-                        AXIS_EPISODE -> onEpisodeDrag(totalY / height)
+                        // 上滑（负位移）下一集，与短视频一致。位移原样交给界面做跟手，
+                        // 手指动多少画面就走多少——只给一个阈值提示的话，划起来像没反应。
+                        AXIS_EPISODE -> onEpisodeDrag(totalY, totalY / height)
                     }
                 },
                 onDragEnd = {
@@ -72,7 +79,7 @@ fun Modifier.playerGestures(
                 },
                 onDragCancel = {
                     // 手势被抢走（弹出面板等）时也要把界面上的拖动状态收干净，
-                    // 否则进度提示会一直停在最后一帧。
+                    // 否则进度提示会一直停在最后一帧，画面也会卡在偏移位置。
                     when (axis) {
                         AXIS_SEEK -> onSeekCommit()
                         AXIS_EPISODE -> onEpisodeCommit(0f)

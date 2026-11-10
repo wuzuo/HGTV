@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  播放画面。
+
+  这里用 TextureView 而不是默认的 SurfaceView：换集跟手要把整层随手指平移，
+  SurfaceView 的画面是独立图层，View 的 translation / alpha 不会作用到它上面——
+  表现就是弹幕跟着手指走、视频纹丝不动。TextureView 参与普通绘制，两者一起动。
+-->
+<androidx.media3.ui.PlayerView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/player_view"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    app:resize_mode="fit"
+    app:shutter_background_color="#FF000000"
+    app:show_buffering="never"
+    app:surface_type="texture_view"
+    app:use_controller="false" />
