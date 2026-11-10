@@ -26,6 +26,7 @@ import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Home
+import androidx.compose.material.icons.filled.Leaderboard
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
@@ -50,15 +51,21 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.hgtv.core.RankBoard
 import com.hgtv.core.Series
 import com.hgtv.phone.FeedStore
 import com.hgtv.phone.PhoneApp
 import com.hgtv.phone.R
+import com.hgtv.phone.RankStore
 import com.hgtv.phone.SearchStore
 
-/** 首页的三个页签。搜索与「我的」只是切内容，不另开返回栈。 */
+/**
+ * 首页的四个页签。搜索与「我的」只是切内容，不另开返回栈；榜单排在推荐之后，
+ * 都是「找剧」的入口，搜索和「我的」属于工具箱。
+ */
 enum class HomeTab(val label: String, val icon: ImageVector) {
     Recommend("推荐", Icons.Filled.Home),
+    Rank("榜单", Icons.Filled.Leaderboard),
     Search("搜索", Icons.Filled.Search),
     Mine("我的", Icons.Filled.Person),
 }
@@ -72,8 +79,10 @@ enum class HomeTab(val label: String, val icon: ImageVector) {
 @Stable
 class HomeState(
     val feed: FeedStore,
+    val rank: RankStore,
     val search: SearchStore,
     val feedGrid: LazyGridState,
+    val rankGrids: Map<RankBoard, LazyGridState>,
     val searchGrid: LazyGridState,
 ) {
     var tab by mutableStateOf(HomeTab.Recommend)
@@ -82,11 +91,16 @@ class HomeState(
 @Composable
 fun rememberHomeState(): HomeState {
     val feed = remember { FeedStore(PhoneApp.repository) }
+    val rank = remember { RankStore(PhoneApp.repository) }
     val search = remember { SearchStore(PhoneApp.repository, PhoneApp.library) }
     val feedGrid = rememberLazyGridState()
+    // 每个榜记住自己的滚动位置：切走再切回来还在原来那一屏，不会又从第一名往下翻。
+    // 榜的数量固定（RankBoard.entries），循环里调 remember 不会破坏调用顺序。
+    val boards = RankBoard.entries
+    val rankGrids = boards.map { rememberLazyGridState() }
     val searchGrid = rememberLazyGridState()
-    return remember(feed, search, feedGrid, searchGrid) {
-        HomeState(feed, search, feedGrid, searchGrid)
+    return remember(feed, rank, search, feedGrid, rankGrids, searchGrid) {
+        HomeState(feed, rank, search, feedGrid, boards.zip(rankGrids).toMap(), searchGrid)
     }
 }
 
@@ -106,6 +120,7 @@ fun HomeScreen(
         Box(Modifier.weight(1f)) {
             when (state.tab) {
                 HomeTab.Recommend -> RecommendScreen(state.feed, state.feedGrid, onOpen)
+                HomeTab.Rank -> RankScreen(state.rank, state.rankGrids, onOpen)
                 HomeTab.Search -> SearchScreen(state.search, state.searchGrid, onOpen)
                 HomeTab.Mine ->
                     LibraryScreen(
@@ -179,8 +194,12 @@ private fun RecommendScreen(
     }
 }
 
+/**
+ * 海报卡片。[rank] 只由榜单页传入：榜单看的是名次，角标要压在海报左上角，
+ * 且前三名用底色区分——一百部戏里前三名是用户最先找的东西。
+ */
 @Composable
-fun SeriesCard(series: Series, onClick: () -> Unit) {
+fun SeriesCard(series: Series, rank: Int? = null, onClick: () -> Unit) {
     Column(Modifier.clickable(onClick = onClick)) {
         Box(
             Modifier.fillMaxWidth()
@@ -193,6 +212,20 @@ fun SeriesCard(series: Series, onClick: () -> Unit) {
                 contentDescription = series.title,
                 modifier = Modifier.fillMaxSize(),
             )
+            if (rank != null) {
+                Text(
+                    "$rank",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = if (rank <= 3) Palette.Background else Color.White,
+                    modifier = Modifier
+                        .align(Alignment.TopStart)
+                        .background(
+                            if (rank <= 3) Palette.Accent else Color(0xCC000000),
+                            RoundedCornerShape(bottomEnd = 6.dp),
+                        )
+                        .padding(horizontal = 7.dp, vertical = 2.dp),
+                )
+            }
             val badge = series.badge.ifBlank { series.heat }
             if (badge.isNotBlank()) {
                 Text(

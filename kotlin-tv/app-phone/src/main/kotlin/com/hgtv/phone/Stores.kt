@@ -7,6 +7,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import com.hgtv.core.ContentRepository
 import com.hgtv.core.Detail
+import com.hgtv.core.RankBoard
+import com.hgtv.core.RankBrowserState
+import com.hgtv.core.RankPosition
 import com.hgtv.core.RecentSearch
 import com.hgtv.core.Series
 import com.hgtv.phone.data.PhoneLibrary
@@ -56,6 +59,92 @@ class FeedStore(private val repository: ContentRepository) {
     suspend fun retry() {
         error = null
         loadMore()
+    }
+}
+
+/**
+ * 榜单状态：四个榜各自缓存，切榜瞬时切换，只有过期或手动刷新才重新请求。
+ *
+ * 走 [ContentRepository.rankSnapshot] 一次拉完整榜（上游分五页取齐），手机端不再分页——
+ * 榜单的价值就是「看完整名次」，翻页反而把一百名切成五段。
+ * 缓存 TTL 与在途去重复用 core 的 [RankBrowserState]，和 TV 端完全同一套语义：
+ * 切走再切回来不会重复请求，四榜可以并行读取。
+ */
+@Stable
+class RankStore(private val repository: ContentRepository) {
+    var board by mutableStateOf(RankBoard.ALL)
+        private set
+    var items by mutableStateOf<List<Series>>(emptyList())
+        private set
+    var positions by mutableStateOf<Map<String, RankPosition>>(emptyMap())
+        private set
+    var caption by mutableStateOf("")
+        private set
+
+    /**
+     * 当前榜是否已经拿到过数据（含缓存）。
+     *
+     * 界面靠它区分「还没拉到」和「拉到了但确实是空的」：前者显示转圈，后者才说暂无内容。
+     * 只看 `items.isEmpty()` 会把切榜后第一帧误判成空榜。
+     */
+    var loaded by mutableStateOf(false)
+        private set
+    var loading by mutableStateOf(false)
+        private set
+    var error by mutableStateOf<String?>(null)
+        private set
+
+    private val session = RankBrowserState()
+
+    fun select(next: RankBoard) {
+        if (next == board) return
+        board = next
+        error = null
+        // 有缓存立即显示：切榜是「换个榜看看」，不该先给一片空白。
+        show(next)
+        loading = session.isRefreshing(next)
+    }
+
+    /** 进入页面或切榜时调用；TTL 内直接返回，不产生任何请求。 */
+    suspend fun load(force: Boolean = false) {
+        val target = board
+        if (!force && session.snapshots[target] != null && session.isFresh(target)) return
+        // 同榜在途去重：四榜并行时各自独立，切走再切回来不会重复拉。
+        if (!session.beginRefresh(target)) {
+            if (board == target) loading = true
+            return
+        }
+        if (board == target) {
+            loading = true
+            error = null
+        }
+        try {
+            val snapshot = withContext(Dispatchers.IO) { repository.rankSnapshot(target) }
+            session.endRefresh(target, snapshot)
+            if (board == target) show(target)
+        } catch (problem: Exception) {
+            // 失败保留上一次的榜：榜单是「扫一眼」的内容，留旧数据比给一片空白有用。
+            session.endRefresh(target, null)
+            if (board == target) {
+                show(target)
+                error = problem.message ?: "榜单加载失败"
+            }
+        } finally {
+            if (board == target) loading = false
+        }
+    }
+
+    private fun show(target: RankBoard) {
+        val snapshot = session.snapshots[target]
+        loaded = snapshot != null
+        items = snapshot?.items.orEmpty()
+        positions = snapshot?.ranking?.positions.orEmpty()
+        caption =
+            snapshot?.let {
+                val updated = it.ranking.updatedText.ifBlank { "红果官网热播榜" }
+                "$updated · ${it.items.size} 部"
+            }.orEmpty()
+        if (snapshot != null) error = null
     }
 }
 
