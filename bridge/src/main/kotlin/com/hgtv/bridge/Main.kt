@@ -56,6 +56,14 @@ fun main() {
     server.executor=executor
     val lock=Any()
     var current: Pair<String,RemoteVideo>?=null
+    // 整集只剩 BVC2 时的软解兜底。和 current 一样是单槽：同一时刻只转一集，切集即换。
+    // 带上集号是为了让同集重复播放（比如切清晰度又切回来）复用已转好的会话，
+    // 而不是把一百多 MB 再下一次、再转一遍。
+    data class SoftSession(val id: String,val episode: String,val transcoder: Bvc2Transcoder)
+    var transcoded: SoftSession?=null
+    // FFmpeg 的定位与编码器探测都要起子进程，第一次用到再算，之后缓存。
+    var ffmpegPath: String?=null
+    var ffmpegEncoder: String?=null
     val warmLock=Any()
     // tiers：这一集实际可用的清晰度档位（升序）。播放器菜单据此标出「本集没有」的档位，
     // 不让用户以为切清晰度没生效。
@@ -101,6 +109,52 @@ fun main() {
             if(previous!=null && previous!==prepared) previous.video.close()
         }
     }
+
+    /**
+     * 整集只剩 BVC2 时起本地软解：解密落盘成 FFmpeg 能读的明文容器，视频按样本表转 Annex-B
+     * 喂 stdin，音轨让 FFmpeg 从明文容器里直通，输出 HLS 交给播放器。
+     *
+     * 这是最后一道兜底——正常路径会先换注册身份重取，服务端多半给回 HEVC，根本走不到这里。
+     * 返回的会话已经等到 m3u8 落地，调用方可以立刻把地址交给播放器。
+     */
+    fun startSoftDecode(episode: String, info: StreamInfo): SoftSession {
+        // 同一集已经转好且在跑：直接复用，省掉重复下载与转码。
+        synchronized(lock) {
+            transcoded?.takeIf { it.episode==episode && it.transcoder.alive }?.let { return it }
+        }
+        val path=ffmpegPath ?: Ffmpeg.locate(appRoot) ?: error(
+            "这一集只有 BVC2（H.266）编码，需要本机 FFmpeg 软解，但没有找到 ffmpeg 可执行文件；" +
+                "请安装 FFmpeg 或设置 HGTV_FFMPEG 指向它")
+        ffmpegPath=path
+        val encoder=ffmpegEncoder ?: Ffmpeg.encoder(path).also { ffmpegEncoder=it }
+        val video=RemoteVideo(repository.http,info)
+        try {
+            video.prepare()
+            val table=video.sampleTable() ?: error("这一集只有 BVC2 编码，但播放资源不是可软解的 MP4")
+            val workDir=java.nio.file.Files.createTempDirectory("hgtv-bvc2")
+            val plain=workDir.resolve("plain.mp4")
+            // 先落盘再用：FFmpeg 读第二输入的音轨要能随机访问整个文件，边下边读的管道拿不到。
+            java.io.FileOutputStream(plain.toFile()).use { video.exportDecrypted(it) }
+            // stss 给不出同步点时只能扫一遍码流（字节家的流把随机访问点放在带内 NAL 上）。
+            val raps=
+                if(table.syncSamples.isEmpty()) AnnexB.scanSyncSamples(table,video::read)
+                else emptyList()
+            val session=Bvc2Transcoder(video,table,raps,plain,workDir.resolve("hls"),path,encoder)
+            val id=UUID.randomUUID().toString()
+            val soft=SoftSession(id,episode,session)
+            synchronized(lock) { transcoded?.transcoder?.close();transcoded=soft }
+            // 等播放列表落地再返回：前端拿到地址就会立刻去拉 m3u8，早于它出现只会拿到 404。
+            val deadline=System.currentTimeMillis()+30_000
+            while(!java.nio.file.Files.exists(session.indexFile) && session.alive &&
+                System.currentTimeMillis()<deadline) Thread.sleep(120)
+            if(!java.nio.file.Files.exists(session.indexFile))
+                error(session.failReason ?: "软解转码没有在预期时间内生成播放列表")
+            return soft
+        } catch(problem: Exception) {
+            video.close()
+            throw problem
+        }
+    }
     server.createContext("/") { exchange ->
         try {
             val path=exchange.requestURI.path
@@ -114,6 +168,35 @@ fun main() {
             val operation=path.removePrefix("/$token/")
             if(operation.startsWith("account/")) {
                 json(exchange,account.handle(exchange,operation.removePrefix("account/"),query));return@createContext
+            }
+            // BVC2 软解产物：HLS 播放列表与分片。只允许读当前会话目录下的文件名，
+            // 路径里带分隔符或 .. 一律拒绝，避免被拼成任意文件读取。
+            if(operation.startsWith("bvc2/")) {
+                val rest=operation.removePrefix("bvc2/")
+                val cut=rest.indexOf('/')
+                val id=if(cut>0) rest.substring(0,cut) else ""
+                val name=if(cut>0) rest.substring(cut+1) else ""
+                val session=synchronized(lock) { transcoded?.takeIf { it.id==id }?.transcoder }
+                if(session==null || name.isEmpty() || name.contains("..") ||
+                    name.contains('\\') || name.contains('/')) {
+                    exchange.sendResponseHeaders(404,-1);return@createContext
+                }
+                val base=session.workDir.toAbsolutePath().normalize()
+                val target=base.resolve(name).normalize()
+                val file=target.toFile()
+                if(!target.startsWith(base) || !file.isFile) {
+                    exchange.sendResponseHeaders(404,-1);return@createContext
+                }
+                val bytes=file.readBytes()
+                exchange.responseHeaders.set("Content-Type",
+                    if(name.endsWith(".m3u8")) "application/vnd.apple.mpegurl" else "video/mp2t")
+                exchange.responseHeaders.set("Cache-Control","no-store")
+                if(exchange.requestMethod=="HEAD") exchange.sendResponseHeaders(200,-1)
+                else {
+                    exchange.sendResponseHeaders(200,bytes.size.toLong())
+                    exchange.responseBody.use { it.write(bytes) }
+                }
+                return@createContext
             }
             when(operation) {
                 // 本地设备身份配置的状态：前端据此提示「已读取配置 / 配置已失效」。
@@ -186,21 +269,34 @@ fun main() {
                 "play" -> {
                     val quality=query["quality"]?.toInt() ?: 1080
                     require(quality in setOf(480,720,1080))
+                    val episode=query["id"].orEmpty()
                     val cached=synchronized(lock) {
-                        warmed?.takeIf { it.episode==query["id"] && it.quality==quality }?.also { warmed=null }
+                        warmed?.takeIf { it.episode==episode && it.quality==quality }?.also { warmed=null }
                     }
                     val prepared=cached ?: run {
-                        val picked=pickStream(query["id"].orEmpty(),quality)
-                        val clip=RemoteVideo(repository.http,picked.info)
-                        try { clip.prepare() } catch(problem: Exception) { clip.close();throw problem }
-                        WarmClip(query["id"].orEmpty(),quality,picked.info.quality,clip,picked.tiers)
+                        try {
+                            val picked=pickStream(episode,quality)
+                            val clip=RemoteVideo(repository.http,picked.info)
+                            try { clip.prepare() } catch(problem: Exception) { clip.close();throw problem }
+                            WarmClip(episode,quality,picked.info.quality,clip,picked.tiers)
+                        } catch(unsupported: UnsupportedCodecException) {
+                            // 换注册身份重取之后仍然只剩 BVC2：桌面端有软解能力，改走本地转码，
+                            // 而不是把「换一集」这个结论甩给用户。
+                            val soft=unsupported.fallback ?: throw unsupported
+                            val session=startSoftDecode(episode,soft)
+                            json(exchange,JSONObject()
+                                .put("url","http://127.0.0.1:${server.address.port}/$token/bvc2/${session.id}/index.m3u8")
+                                .put("quality","${soft.quality}（软解）")
+                                .put("tiers",JSONArray()))
+                            return@createContext
+                        }
                     }
                     val clip=prepared.video
                     val id=UUID.randomUUID().toString()
                     synchronized(lock) { current?.second?.close();current=id to clip }
                     json(exchange,JSONObject().put("url","http://127.0.0.1:${server.address.port}/$token/video?id=$id").put("quality",prepared.actual).put("tiers",JSONArray(prepared.tiers)))
                 }
-                "stop" -> { synchronized(lock) { current?.second?.close();current=null;warmed?.video?.close();warmed=null };json(exchange,JSONObject().put("ok",true)) }
+                "stop" -> { synchronized(lock) { current?.second?.close();current=null;warmed?.video?.close();warmed=null;transcoded?.transcoder?.close();transcoded=null };json(exchange,JSONObject().put("ok",true)) }
                 "video" -> {
                     val selected=synchronized(lock) { current?.takeIf { it.first==query["id"] }?.second }
                     if(selected==null) { exchange.sendResponseHeaders(404,-1);return@createContext }
@@ -247,7 +343,7 @@ fun main() {
         } finally { exchange.close() }
     }
     Runtime.getRuntime().addShutdownHook(Thread {
-        synchronized(lock) { current?.second?.close();current=null;warmed?.video?.close();warmed=null }
+        synchronized(lock) { current?.second?.close();current=null;warmed?.video?.close();warmed=null;transcoded?.transcoder?.close();transcoded=null }
         repository.http.dispatcher.cancelAll()
         account.close();server.stop(0);executor.shutdownNow()
         repository.http.dispatcher.cancelAll();repository.http.connectionPool.evictAll()
