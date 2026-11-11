@@ -25,6 +25,8 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.hgtv.core.Danmaku
 import com.hgtv.core.DanmakuEmoji
+import com.hgtv.core.DanmakuRepeat
+import com.hgtv.core.repeatGroups
 
 /**
  * 压在画面上的弹幕层。
@@ -35,6 +37,10 @@ import com.hgtv.core.DanmakuEmoji
  * 排轨规则与 TV 端一致：同一条轨道上，后一条要等前一条**完全进画**才能出发
  * （`freeAt = enterTime + (宽度 + 间距) / 速度`），因此同轨两条永远不会追尾；
  * 排不下就换轨，轨数不够就丢弃这一条，宁可不显示也不叠字。
+ *
+ * 重复内容合并也与 TV 端同源（[repeatGroups]）：同一句在窗口内出现多次只画一条，
+ * 文案挂上数量（`从第一季追到第五季的→ ×25`）。不合并的话，一句被刷屏的话会把
+ * 八条轨道全占满，画面上只剩那一句——这就是「弹幕数量不对」的直接来源。
  */
 @Composable
 fun DanmakuLayer(
@@ -59,12 +65,15 @@ fun DanmakuLayer(
             )
         }
 
+    // 窗口比 TV 端短：手机一屏只有八条轨道，20 秒一合会把热门句子整段压成一条。
+    val groups = remember(items) { repeatGroups(items, PHONE_REPEAT_WINDOW_MS) }
+
     val placed =
-        remember(items, width, size, style) {
-            if (width <= 0 || size <= 0 || items.isEmpty()) {
+        remember(groups, width, size, style) {
+            if (width <= 0 || size <= 0 || groups.isEmpty()) {
                 emptyList()
             } else {
-                layoutLanes(items, width, size, measurer, style)
+                layoutLanes(groups, width, size, measurer, style)
             }
         }
 
@@ -80,7 +89,7 @@ fun DanmakuLayer(
         var index = lastStartedIndex(placed, now)
         while (index >= 0) {
             val line = placed[index]
-            val elapsed = now - line.item.offsetMs
+            val elapsed = now - line.startMs
             if (elapsed > line.travelMs) break
             if (elapsed >= 0) {
                 val progress = elapsed / line.travelMs
@@ -93,7 +102,8 @@ fun DanmakuLayer(
 }
 
 private class PlacedLine(
-    val item: Danmaku,
+    /** 这一条（这一组重复弹幕）该出现的时刻。 */
+    val startMs: Long,
     val layout: androidx.compose.ui.text.TextLayoutResult,
     val textWidth: Float,
     val top: Float,
@@ -105,25 +115,28 @@ private class PlacedLine(
 private const val TRAVEL_MS = 8_500f
 private const val LANE_GAP_PX = 24f
 
+/** 同一句在这段时间内出现多次只画一条：手机屏幕小，一场刷屏就能占满所有轨道。 */
+private const val PHONE_REPEAT_WINDOW_MS = 6_000L
+
 private fun layoutLanes(
-    items: List<Danmaku>,
+    groups: List<DanmakuRepeat>,
     width: Int,
     height: Int,
     measurer: androidx.compose.ui.text.TextMeasurer,
     style: TextStyle,
 ): List<PlacedLine> {
-    val sorted = items.sortedBy { it.offsetMs }
     val measured =
-        sorted.map { item ->
+        groups.map { group ->
             // 平台的弹幕表情不是字形而是 `[笑哭]` 这类方括号标签；换成对应字形后
             // 交给系统字体画——手机上系统 emoji 字体本身就是彩色的，不需要再铺一层图片。
+            // 重复过的组带「×N」后缀，和 TV 端同一套文案。
             val layout =
                 measurer.measure(
-                    AnnotatedString(DanmakuEmoji.displayText(item.text)),
+                    AnnotatedString(DanmakuEmoji.displayText(group.label)),
                     style,
                     maxLines = 1,
                 )
-            item to layout
+            group to layout
         }
     val lineHeight = measured.maxOfOrNull { it.second.size.height }?.toFloat() ?: 0f
     if (lineHeight <= 0f) return emptyList()
@@ -134,22 +147,22 @@ private fun layoutLanes(
     val safeTop = height * 0.10f
     val freeAt = LongArray(laneCount) { 0L }
     val result = ArrayList<PlacedLine>(measured.size)
-    for ((item, layout) in measured) {
+    for ((group, layout) in measured) {
         val textWidth = layout.size.width.toFloat()
         if (textWidth > width * 1.4f) continue // 超长弹幕直接丢，否则会挡住半屏
         val speed = (width + textWidth) / TRAVEL_MS
         var lane = -1
         for (i in 0 until laneCount) {
-            if (item.offsetMs >= freeAt[i]) {
+            if (group.firstMs >= freeAt[i]) {
                 lane = i
                 break
             }
         }
         if (lane < 0) continue
-        freeAt[lane] = item.offsetMs + ((textWidth + LANE_GAP_PX) / speed).toLong()
+        freeAt[lane] = group.firstMs + ((textWidth + LANE_GAP_PX) / speed).toLong()
         result +=
             PlacedLine(
-                item = item,
+                startMs = group.firstMs,
                 layout = layout,
                 textWidth = textWidth,
                 top = safeTop + lane * laneHeight,
@@ -166,7 +179,7 @@ private fun lastStartedIndex(lines: List<PlacedLine>, now: Long): Int {
     var found = -1
     while (low <= high) {
         val mid = (low + high) ushr 1
-        if (lines[mid].item.offsetMs <= now) {
+        if (lines[mid].startMs <= now) {
             found = mid
             low = mid + 1
         } else {

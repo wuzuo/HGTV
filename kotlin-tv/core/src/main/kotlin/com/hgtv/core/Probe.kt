@@ -8,6 +8,68 @@ fun main(args: Array<String>) {
         args.getOrNull(at + 1)?.let { DeviceIdentityFile.path = java.io.File(it) }
     }
     val repository = ContentRepository()
+    if (args.contains("--danmaku")) {
+        // 用法：--danmaku <episodeId> [bookId] [durationMs]
+        // 同一集、同一时间窗，分别按「旧集群 + 引导位」「新集群 + 引导位」「新集群 + 空引导位」
+        // 各拉一遍，用来确认弹幕条数的差异到底出在哪个参数上。
+        val at = args.indexOf("--danmaku")
+        val episode = args.getOrNull(at + 1)
+        if (episode == null) {
+            println("用法：--danmaku <episodeId> [bookId] [durationMs]")
+            return
+        }
+        val book = args.getOrNull(at + 2) ?: episode
+        val duration = args.getOrNull(at + 3)?.toLongOrNull() ?: 120_000L
+        val timed = TimedComments()
+        val configs =
+            listOf(
+                Triple("b + 引导位", COMMENT_HOST_LEGACY, listOf(1, 3, 4, 2)),
+                Triple("a + 引导位", COMMENT_HOST, listOf(1, 3, 4, 2)),
+                Triple("a + 空引导位", COMMENT_HOST, emptyList<Int>()),
+            )
+        for ((name, host, guides) in configs) {
+            var start = 0L
+            var total = 0
+            val perWindow = mutableListOf<Int>()
+            val texts = mutableListOf<String>()
+            while (start < duration) {
+                val attempt =
+                    runCatching { timed.fetch(book, episode, start, duration, host, guides) }
+                val raw = attempt.getOrNull()
+                if (raw == null) {
+                    println("danmaku[$name] 失败 @${start}ms：${attempt.exceptionOrNull()?.message}")
+                    break
+                }
+                val data = raw.optJSONObject("data") ?: break
+                val list = data.optJSONArray("data_list") ?: break
+                total += list.length()
+                perWindow += list.length()
+                for (i in 0 until list.length()) {
+                    val text =
+                        list.optJSONObject(i)
+                            ?.optJSONObject("comment")
+                            ?.optJSONObject("common")
+                            ?.optJSONObject("content")
+                            ?.optString("text")
+                            .orEmpty()
+                            .replace(Regex("[\\p{Cc}\\u2028\\u2029]"), " ")
+                            .trim()
+                    if (text.isNotEmpty()) texts += text
+                }
+                val next = data.optJSONObject("extra")?.optLong("next_query_danmaku_list_time", -1L) ?: -1L
+                if (next <= start) break
+                start = next
+            }
+            // 同一句重复多少次，直接决定画面上会不会被一句话铺满。
+            val top = texts.groupingBy { it }.eachCount().entries.sortedByDescending { it.value }.take(3)
+            println(
+                "danmaku[$name] 窗口=$perWindow 合计=$total 去重后=${texts.toSet().size} 时长=${duration}ms 最高重复=${
+                    top.joinToString("；") { "${it.key.take(12)}×${it.value}" }
+                }"
+            )
+        }
+        return
+    }
     if (args.contains("--category-recommendations")) {
         try {
             for (category in listOf(DramaCategory.COMIC, DramaCategory.REAL)) {

@@ -20,6 +20,38 @@ class TimedComments {
                     return JSONObject(it.second)
                 }
         }
+        val result =
+            parse(fetch(series, episode, start, duration, COMMENT_HOST, emptyList()), series, episode, start, duration)
+        synchronized(cache) {
+            cache[key] = System.currentTimeMillis() to result.toString()
+            while (cache.size > 64) cache.remove(cache.keys.first())
+        }
+        return result
+    }
+
+    /**
+     * 取一页弹幕的原始响应。
+     *
+     * 参数口径以官方客户端抓包为准（7.2.9，comment_source 601 / group_type 30 /
+     * comment_type 20 / count 90）：`start_offset_time` 是窗口起点，
+     * `playlet_item_duration` 是整集时长，服务端固定按 30 秒切窗，用响应里的
+     * `next_query_danmaku_list_time` 推进。
+     *
+     * 官方传的是空 `need_danmaku_guide_type`，打的是 a 集群；这两处**实测没有差别**：
+     * 同一集、同一窗口，b 集群 + 引导位 [1,3,4,2] 与 a 集群 + 空数组返回的条数和文本
+     * 完全一致（见 --danmaku 的 A/B 输出）。这里跟官方对齐，是为了以后服务端按参数
+     * 分流时不会悄悄掉队，不代表它修好了什么。
+     */
+    internal fun fetch(
+        series: String,
+        episode: String,
+        start: Long,
+        duration: Long,
+        host: String,
+        guideTypes: List<Int>,
+    ): JSONObject {
+        require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
+        require(start >= 0 && duration > start && duration <= 86400000)
         val payload =
             JSONObject()
                 .put("comment_source", 601)
@@ -38,15 +70,9 @@ class TimedComments {
                         .put("book_id", series)
                         .put("start_offset_time", start)
                         .put("playlet_item_duration", duration)
-                        .put("need_danmaku_guide_type", JSONArray(listOf(1, 3, 4, 2))),
+                        .put("need_danmaku_guide_type", JSONArray(guideTypes)),
                 )
-        val result =
-            parse(transport.read(episode, payload, 601, 1000), series, episode, start, duration)
-        synchronized(cache) {
-            cache[key] = System.currentTimeMillis() to result.toString()
-            while (cache.size > 64) cache.remove(cache.keys.first())
-        }
-        return result
+        return transport.read(episode, payload, 601, 1000, host)
     }
 
     companion object {

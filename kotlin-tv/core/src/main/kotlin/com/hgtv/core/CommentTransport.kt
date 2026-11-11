@@ -10,13 +10,30 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 
+/**
+ * 评论 / 弹幕接口的集群。
+ *
+ * 官方客户端 7.2.9 打的是 a 集群；b 集群上同一集同一时间窗返回的条数明显更少，
+ * 弹幕「比官方少」有一半出在这里。
+ */
+internal const val COMMENT_HOST = "api5-normal-sinfonlinea.fqnovel.com"
+
+/** 旧集群，只留给 --danmaku 的 A/B 对比。 */
+internal const val COMMENT_HOST_LEGACY = "api5-normal-sinfonlineb.fqnovel.com"
+
 /** Shared anonymous transport for read-only comment lists. Never accepts account credentials. */
 internal class CommentTransport {
     private val http =
         OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).followRedirects(false).build()
     private val signature = CommentSignature()
 
-    fun read(episode: String, payload: JSONObject, source: Int, channel: Int): JSONObject {
+    fun read(
+        episode: String,
+        payload: JSONObject,
+        source: Int,
+        channel: Int,
+        host: String = COMMENT_HOST,
+    ): JSONObject {
         val query =
             linkedMapOf(
                 "aid" to "8662",
@@ -48,7 +65,7 @@ internal class CommentTransport {
         val request =
             Request.Builder()
                 .url(
-                    "https://api5-normal-sinfonlineb.fqnovel.com/novel/commentapi/comment/list/$episode/v1/?$encoded"
+                    "https://$host/novel/commentapi/comment/list/$episode/v1/?$encoded"
                 )
                 .header(
                     "User-Agent",
