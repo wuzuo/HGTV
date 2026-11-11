@@ -129,6 +129,23 @@ class Api {
     }),
   );
 
+  /// 整集一次取完。
+  ///
+  /// 窗口怎么切、怎么并发由本机服务的 `DanmakuWindows` 决定，与 TV / 手机端同一份规则：
+  /// 首窗探明步长后其余窗口一次并发，所以这里不需要再维护分页游标。
+  /// 返回的条目已按时间排序、跨窗口去重。
+  Future<TimedPage> danmakuAll(
+    String series,
+    String episode, {
+    required int durationMs,
+  }) async => timedPageFromJson(
+    await _bridge.get('danmaku-all', {
+      'series': series,
+      'episode': episode,
+      'duration': '$durationMs',
+    }),
+  );
+
   Future<AccountInfo> accountStatus() async => AccountInfo.fromJson(await _bridge.get('account/status'));
 
   /// 本地设备身份配置的状态：`configured` / `deviceId` / `file` / `rejected`。

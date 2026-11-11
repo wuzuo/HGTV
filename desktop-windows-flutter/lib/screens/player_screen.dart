@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-only
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -82,17 +81,15 @@ class _PlayerScreenState extends State<PlayerScreen> {
 
   // Danmaku state.
   //
-  // 弹幕按 30 秒窗口分页取，窗口起点是 key：换集、快进、改设置都只需要丢掉旧窗口重取，
-  // 不必把整集重新拉一遍。`_danmaku` 是当前所有窗口去重合并后的结果，交给渲染层。
-  final Map<int, List<TimedComment>> _danmakuPages = {};
+  // 整集一次取完（本机服务按 30 秒窗口并发拉，规则在 core 的 DanmakuWindows）。
+  // 所以这里不再维护分页游标：`_danmaku` 就是渲染层要的那一份，换集跟着 generation 走。
   List<TimedComment> _danmaku = const [];
   int _danmakuGeneration = 0;
   bool _danmakuLoading = false;
   int _danmakuFailedAt = 0;
 
-  /// 已经取到弹幕的时间轴游标（毫秒）。接口用 `nextMS` 指定下一段的起点，
-  /// 段与段之间可能隔着几十秒没有弹幕，按固定 30 秒切窗会反复请求同一段空列表。
-  int _danmakuCoveredTo = 0;
+  /// 这一集是否已经拉到过：成功之后就不再问，失败 / 换集 / 手动重读会清掉。
+  bool _danmakuLoaded = false;
 
   DanmakuMode get _danmakuMode => widget.session.store.danmakuMode;
 
@@ -114,19 +111,8 @@ class _PlayerScreenState extends State<PlayerScreen> {
     _subscriptions = [
       _player.stream.position.listen((value) {
         if (!mounted) return;
-        // A seek (or resume) can jump seconds at a time; discard danmaku windows from
-        // the old position so loading resumes around the new one instead of stalling.
-        final jump = (value.inMilliseconds - _position.inMilliseconds).abs();
-        final seeked = jump > 5000;
-        setState(() {
-          _position = value;
-          if (seeked) {
-            _danmakuPages.clear();
-            _danmaku = const [];
-            _danmakuCoveredTo = 0;
-            _danmakuGeneration += 1;
-          }
-        });
+        // 弹幕是整集的，拖动进度条不需要重新取：位置变了画面自然跟着走。
+        setState(() => _position = value);
         _maybeLoadDanmaku();
         _maybePreloadNext();
       }),
@@ -222,10 +208,9 @@ class _PlayerScreenState extends State<PlayerScreen> {
       _position = Duration.zero;
       _duration = Duration.zero;
       _buffer = Duration.zero;
-      _danmakuPages.clear();
       _danmaku = const [];
-      _danmakuCoveredTo = 0;
       _danmakuGeneration += 1;
+      _danmakuLoaded = false;
       _danmakuFailedAt = 0;
     });
     if (seamless) {
@@ -491,56 +476,46 @@ class _PlayerScreenState extends State<PlayerScreen> {
     ),
   );
 
-  /// 一次只排一段，命中就返回：播放位置每几百毫秒推进一次，串行补段足够跟上。
+  /// 整集一次取完，成功之后就不再问。
   ///
-  /// 起点用「已覆盖游标」而不是当前位置对齐的 30 秒格：接口返回的 `nextMS` 才是
-  /// 下一段真正有弹幕的起点，中间的空档没必要反复问。反复请求空段会让画面长时间
-  /// 一条弹幕都没有，看起来像弹幕丢了。
+  /// 早先是「一次排一段、边播边补」：进片先拉一页、之后每 500ms 才推进一页，预取到
+  /// 90 秒要等三个来回；拖动进度条落到还没取过的地方更是一段空白。现在窗口编排交给
+  /// 本机服务的 `DanmakuWindows`（与 TV / 手机端同一份），整集几百毫秒就到位。
   void _maybeLoadDanmaku() {
-    if (!_danmakuMode.showsStyle || _danmakuLoading || _episodeId.isEmpty) return;
+    if (!_danmakuMode.showsStyle ||
+        _danmakuLoaded ||
+        _danmakuLoading ||
+        _episodeId.isEmpty) {
+      return;
+    }
     final total = _duration.inMilliseconds;
     // Duration arrives shortly after `open`; without it the request cannot describe the
     // episode, so wait for the next position tick instead of sending a made-up length.
     if (total <= 0) return;
-    final now = _position.inMilliseconds;
-    if (now >= total) return;
     // 失败后歇 4 秒再试：弹幕是可选功能，接口不通时不能每秒都打一次请求。
     if (_danmakuFailedAt != 0 &&
         DateTime.now().millisecondsSinceEpoch - _danmakuFailedAt < 4000) {
       return;
     }
-    // 往回拖进度条或切集之后，游标要退回当前位置所在的那一段。
-    if (now + 60000 < _danmakuCoveredTo) _danmakuCoveredTo = now ~/ 30000 * 30000;
-    final from = math.max(_danmakuCoveredTo, now ~/ 30000 * 30000);
-    if (from >= total) return;
-    // 已经预取到 90 秒之外就先停手，别把整集的段一次性拉完。
-    if (from - now >= 90000) return;
-    if (_danmakuPages.containsKey(from)) return;
-    unawaited(_loadDanmaku(from, total));
+    unawaited(_loadDanmaku(total));
   }
 
-  /// [durationMs] 是整集时长（等价于平台的 `playlet_item_duration`），不是这一段的长度：
-  /// 本机服务按它校验时间轴并给出下一段的起点。
-  Future<void> _loadDanmaku(int start, int durationMs) async {
+  /// [durationMs] 是整集时长（等价于平台的 `playlet_item_duration`）。
+  /// 返回的条目已经按时间排序、跨窗口去重，直接交给渲染层。
+  Future<void> _loadDanmaku(int durationMs) async {
     _danmakuLoading = true;
     final ticket = _danmakuGeneration;
     final episode = _episodeId;
     try {
-      final page = await widget.session.api.danmaku(
+      final page = await widget.session.api.danmakuAll(
         widget.detail.series.id,
         episode,
-        startMs: start,
         durationMs: durationMs,
       );
       if (!mounted || episode != _episodeId || ticket != _danmakuGeneration) return;
       setState(() {
-        _danmakuPages[start] = page.items;
-        // 接口给的下一段起点可能横跨几十秒；没给就按常规 30 秒推进，
-        // 但至少前进 5 秒，避免服务端返回原地不动的起点时空转。
-        final next = page.nextMs > start ? page.nextMs : start + 30000;
-        _danmakuCoveredTo = math.max(_danmakuCoveredTo, math.max(next, start + 5000));
-        _pruneDanmakuPages(start);
-        _danmaku = _mergedDanmaku();
+        _danmaku = page.items;
+        _danmakuLoaded = true;
       });
     } catch (_) {
       // Danmaku is optional; playback must keep working when the endpoint fails.
@@ -550,36 +525,12 @@ class _PlayerScreenState extends State<PlayerScreen> {
     }
   }
 
-  /// 只留当前段前后各一到两段：整集九十多分钟全留着会让合并与重排越来越慢。
-  void _pruneDanmakuPages(int anchor) {
-    if (_danmakuPages.length <= 8) return;
-    final keys = _danmakuPages.keys.toList()
-      ..sort((a, b) => (a - anchor).abs().compareTo((b - anchor).abs()));
-    for (final key in keys.skip(8)) {
-      _danmakuPages.remove(key);
-    }
-  }
-
-  /// 相邻窗口在边界上会重复同一条，因此按 id 去重后再交给渲染层。
-  List<TimedComment> _mergedDanmaku() {
-    final seen = <String>{};
-    final items = <TimedComment>[];
-    for (final page in _danmakuPages.values) {
-      for (final item in page) {
-        if (seen.add(item.id)) items.add(item);
-      }
-    }
-    items.sort((a, b) => a.timeMs.compareTo(b.timeMs));
-    return items;
-  }
-
-  /// 设置面板里的「重新读取弹幕」：丢掉已取到的窗口，从当前位置重来一次。
+  /// 设置面板里的「重新读取弹幕」：丢掉已取到的，从当前位置重来一次。
   void _reloadDanmaku() {
     setState(() {
-      _danmakuPages.clear();
       _danmaku = const [];
-      _danmakuCoveredTo = 0;
       _danmakuGeneration += 1;
+      _danmakuLoaded = false;
       _danmakuFailedAt = 0;
     });
     _maybeLoadDanmaku();

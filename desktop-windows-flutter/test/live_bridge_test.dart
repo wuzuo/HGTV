@@ -72,6 +72,16 @@ void main() {
         );
         expect(laterDanmaku.nextMs, greaterThan(90000));
 
+        // 整集一次取完：窗口编排在本机服务里做（首窗探明步长后其余并发），
+        // 所以条目必须跨过多个 30 秒窗口，而不是只覆盖开头一段。
+        final allDanmaku = await api.danmakuAll(
+          series.id,
+          detail.episodes.first,
+          durationMs: 600000,
+        );
+        expect(allDanmaku.items, isNotEmpty);
+        expect(allDanmaku.items.last.timeMs, greaterThan(60000));
+
         // The play endpoint hands back a loopback URL; the player relies on it being
         // seekable, so Range support is part of the contract.
         final play = await api.play(detail.episodes.first, quality: 720);

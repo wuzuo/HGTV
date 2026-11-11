@@ -213,6 +213,28 @@ fun main() {
                 }
                 "comment-page" -> json(exchange,appCommentPages.read(query["series"].orEmpty(),query["episode"].orEmpty(),query["cursor"].orEmpty()))
                 "danmaku" -> json(exchange,timedComments.read(query["series"].orEmpty(),query["episode"].orEmpty(),query["start"]?.toLong() ?: -1,query["duration"]?.toLong() ?: -1))
+                // 整集一次取完：窗口编排与 TV / 手机端同一份（core 的 DanmakuWindows，
+                // 首窗探明步长后其余并发）。前端不用再自己维护分页游标。
+                "danmaku-all" -> {
+                    val items=ArrayList<JSONObject>()
+                    val seen=HashSet<String>()
+                    DanmakuWindows().load(
+                        totalMs=query["duration"]?.toLong() ?: 0L,
+                        read={start,total ->
+                            timedComments.read(query["series"].orEmpty(),query["episode"].orEmpty(),start,total)
+                        }
+                    ) { _,page,_ ->
+                        val rows=page.optJSONArray("items") ?: JSONArray()
+                        for(i in 0 until rows.length()) {
+                            val row=rows.optJSONObject(i) ?: continue
+                            val id=row.optString("id")
+                            if(id.isBlank() || !seen.add(id)) continue
+                            items+=row
+                        }
+                    }
+                    items.sortBy { it.optLong("timeMS",0L) }
+                    json(exchange,JSONObject().put("items",JSONArray(items)))
+                }
                 "comments" -> json(exchange,publicComments.read(query["series"].orEmpty(),query["episode"].orEmpty()))
                 "search" -> {
                     val result=repository.searchAll(query["q"].orEmpty(),query["page"]?.toInt() ?: 1)

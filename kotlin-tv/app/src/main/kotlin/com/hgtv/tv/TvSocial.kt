@@ -22,9 +22,6 @@ class TvSocial(
         PublicComments(okhttp3.OkHttpClient())::read,
 ) {
     private companion object {
-        /** 弹幕接口按时间窗返回，一窗 30 秒；窗口起点必须对齐到它。 */
-        const val WINDOW_MS = 30_000L
-
         /** 请求失败后隔多久再试：太长会把整窗弹幕拖到播放位置之后，等于整段丢掉。 */
         const val RETRY_COOLDOWN_MS = 4_000L
 
@@ -36,15 +33,15 @@ class TvSocial(
 
         /** 手上最多留几段：往前 90 秒、往回 1 分钟，再留几段给来回跳转，8 段够用。 */
         const val KEEP_PAGES = 8
-
-        /** 游标最小推进量：接口偶尔给出几乎不前进的 next，按这个下限兜住，避免原地重问。 */
-        const val MIN_STEP_MS = 5_000L
     }
 
     private val emoji = CommentEmoji(activity)
     private val main = Handler(Looper.getMainLooper())
     private val worker = Executors.newFixedThreadPool(2)
     private val timed = TimedComments()
+
+    /** 窗口编排与手机端、Windows 端同一份：首窗探明步长，其余并发拉。 */
+    private val windows = DanmakuWindows()
     private val prefs = activity.getSharedPreferences("social", 0)
     private var active = false
     private var key: Pair<String, String>? = null
@@ -109,12 +106,16 @@ class TvSocial(
                         (failedAt == 0L ||
                             android.os.SystemClock.elapsedRealtime() - failedAt > RETRY_COOLDOWN_MS)
                 ) {
-                    // 往回跳得比手上留的还远：从当前这一窗重新拉一次。
-                    if (position + KEEP_BEHIND_MS < coveredTo)
-                        coveredTo = position / WINDOW_MS * WINDOW_MS
+                    // 往回跳得比手上最老的那一段还远，才从当前位置重拉。
+                    // 不能用 coveredTo 判：一次并发拿的是「往前 90 秒」的几段，coveredTo
+                    // 天然领先 position 一大截，用它会每 500ms 都判成「往回跳了」。
+                    val oldest = pages.keys.minOrNull()
+                    if (oldest != null && position + KEEP_BEHIND_MS < oldest) {
+                        coveredTo = windows.align(position)
+                    }
                     // 接口自己会告诉下一次该从什么时候问（next_query_danmaku_list_time），
                     // 有的集前面几十秒根本没有弹幕，硬按 30 秒切窗只会反复问到空列表。
-                    val from = maxOf(coveredTo, position / WINDOW_MS * WINDOW_MS)
+                    val from = maxOf(coveredTo, windows.align(position))
                     if (from < p.duration && from - position < LOOKAHEAD_MS)
                         loadTimed(next, from, p.duration)
                 }
@@ -173,31 +174,38 @@ class TvSocial(
         val ticket = generation
         val request = RequestScope()
         scope = request
+        val until = start + LOOKAHEAD_MS
         worker.submit {
             try {
-                val page = request.run { timed.read(ids.first, ids.second, start, duration) }
-                android.util.Log.i(
-                    "HGTV",
-                    "Danmaku page start=$start next=${page.optLong("nextMS")} " +
-                        "items=${page.optJSONArray("items")?.length() ?: 0} " +
-                        "rows=${page.optInt("rows")}",
-                )
+                // 一次把「当前往前 90 秒」的几段并发拿走：原先一次只拿一段，每 500ms
+                // 推进一页，预取到 90 秒要等三个来回；画面一进来那几秒就在等。
+                val covered =
+                    windows.load(
+                        totalMs = duration,
+                        fromMs = start,
+                        untilMs = until,
+                        read = { s, d -> request.run { timed.read(ids.first, ids.second, s, d) } },
+                    ) { s, page, cost ->
+                        android.util.Log.i(
+                            "HGTV",
+                            "Danmaku page start=$s next=${page.optLong("nextMS")} " +
+                                "items=${page.optJSONArray("items")?.length() ?: 0} " +
+                                "rows=${page.optInt("rows")} cost=${cost}ms",
+                        )
+                        main.post {
+                            if (ticket != generation || !active) return@post
+                            pages[s] = page
+                            trimPages(s)
+                            publish()
+                        }
+                    }
                 main.post {
                     if (ticket != generation || !active) return@post
                     loading = false
-                    pages[start] = page
-                    // 接口说下一段从 nextMS 开始：中间这段就是没有弹幕，直接跳过，
-                    // 再按 30 秒一窗去问只会拿回一串空列表。游标至少推进 5 秒，防止原地打转。
-                    coveredTo =
-                        maxOf(
-                            coveredTo,
-                            page.optLong("nextMS", start + WINDOW_MS),
-                            start + MIN_STEP_MS,
-                        )
-                    while (pages.size > KEEP_PAGES) pages.remove(
-                        pages.keys.maxBy { kotlin.math.abs(it - start) }
-                    )
-                    publish()
+                    // 一段都没拿到就当成失败：`DanmakuWindows` 内部把每窗的异常吞掉了，
+                    // 外面看不到，靠「游标没推进」判断并进入冷却，免得每拍都重打一轮。
+                    if (covered > start) coveredTo = maxOf(coveredTo, covered)
+                    else failedAt = android.os.SystemClock.elapsedRealtime()
                 }
             } catch (_: Exception) {
                 main.post {
@@ -207,6 +215,13 @@ class TvSocial(
                     }
                 }
             }
+        }
+    }
+
+    /** 只留离当前段最近的几段：整集都留着会让合并与重排越来越慢。 */
+    private fun trimPages(anchor: Long) {
+        while (pages.size > KEEP_PAGES) {
+            pages.remove(pages.keys.maxBy { kotlin.math.abs(it - anchor) })
         }
     }
 
