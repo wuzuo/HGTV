@@ -5,9 +5,11 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -19,6 +21,7 @@ import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.BottomSheetDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
@@ -48,12 +51,19 @@ sealed interface PlayerSheet {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun Sheet(title: String, onDismiss: () -> Unit, content: @Composable () -> Unit) {
+private fun Sheet(
+    title: String,
+    onDismiss: () -> Unit,
+    // 选集面板要把画面留在上方，蒙层会把缩小的画面压黑，所以单独关掉。
+    scrimColor: Color = BottomSheetDefaults.ScrimColor,
+    content: @Composable () -> Unit,
+) {
     ModalBottomSheet(
         onDismissRequest = onDismiss,
         sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
         containerColor = Palette.Surface,
         contentColor = Palette.TextPrimary,
+        scrimColor = scrimColor,
     ) {
         Column(Modifier.fillMaxWidth().padding(bottom = 20.dp)) {
             Text(
@@ -113,14 +123,18 @@ fun EpisodesSheet(
     onPick: (Int) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    Sheet("选集（共 $count 集）", onDismiss) {
-        LazyVerticalGrid(
-            columns = GridCells.Fixed(5),
-            contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-            modifier = Modifier.heightIn(max = 360.dp),
-        ) {
+    // 面板压到半屏，剩下的地方留给缩小的画面。用实测高度算而不是按 dp 猜：
+    // PlayerScreen 那边按 0.5 缩放画面，两边对不上就会切掉一截。
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val panelHeight = (maxHeight * 0.5f - 120.dp).coerceAtLeast(160.dp)
+        Sheet("选集（共 $count 集）", onDismiss, scrimColor = Color.Transparent) {
+            LazyVerticalGrid(
+                columns = GridCells.Fixed(5),
+                contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+                modifier = Modifier.heightIn(max = panelHeight),
+            ) {
             itemsIndexed(List(count) { it }) { index, _ ->
                 val selected = index == current
                 val watched = index < watchedIndex
@@ -150,6 +164,7 @@ fun EpisodesSheet(
                     )
                 }
             }
+        }
         }
     }
 }

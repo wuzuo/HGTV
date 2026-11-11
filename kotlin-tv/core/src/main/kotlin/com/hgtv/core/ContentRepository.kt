@@ -165,7 +165,16 @@ class ContentHttpException(val statusCode: Int) : IOException("内容请求失�
 
 class SearchSessionExpiredException : IOException("搜索结果已过期，请从第 1 页重新搜索")
 
-class EmptyPlaybackResponseException : IOException("播放接口暂时返回空响应，请稍后重试")
+/**
+ * 播放接口没给出可用的播放模型。
+ *
+ * 三种原因在业务上都是「拿不到」，但排查时完全是三件事：body 为空（服务端拒绝）、
+ * body 不是 JSON（被网关拦下、回了 HTML）、业务错误码非 0（额度/风控/参数不认）。
+ * 所以把具体原因挂在 message 上——给用户看的文案另由 [PlaybackSources] 统一映射，
+ * 这里的信息只会出现在日志和诊断输出里。
+ */
+class EmptyPlaybackResponseException(detail: String = "") :
+    IOException("播放接口暂时返回空响应，请稍后重试" + if (detail.isBlank()) "" else "（$detail）")
 
 /**
  * 整集只有本机解不了的编码（BVC2/H.266）时抛出。
@@ -225,6 +234,9 @@ constructor(
     private data class UpcomingPlaybackModel(val entry: JSONObject, val savedAt: Long)
 
     private val upcomingPlaybackModels = linkedMapOf<String, UpcomingPlaybackModel>()
+
+    /** 最近一次打开的剧集号，只用于给播放请求体补 "1001"。 */
+    @Volatile private var lastSeriesId: String? = null
 
     /**
      * 已确认「默认取流只给 BVC2、必须换注册身份重取」的集号。
@@ -611,8 +623,61 @@ constructor(
 
     private val relatedCache = linkedMapOf<String, List<RelatedWork>>()
 
+    /** 相关作品，不含当前这一部。 */
     fun related(id: String, force: Boolean = false): List<RelatedWork> {
         require(id.matches(Regex("[0-9]{1,30}")))
+        return relatedAll(id, force).filter { it.series.id != id }
+    }
+
+    /**
+     * 相关作品，**含当前这一部**，保持接口顺序。
+     *
+     * 跨季连播要判断「我在第几季」：只拿别人的列表，站在第 3 季上分不清下一季是 2 还是 4。
+     */
+    fun seasons(id: String, force: Boolean = false): List<RelatedWork> {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        return relatedAll(id, force)
+    }
+
+    /**
+     * 相关作品接口的请求参数。
+     *
+     * 参数少一个服务端就会回不同的 cell（实测去掉版本号后，「第1季」那类 cell 直接消失），
+     * 所以探针和正式请求必须共用这一份。
+     */
+    private fun relatedValues(id: String) =
+        VendorConstants.device.toMutableMap().apply {
+            for (key in
+                listOf(
+                    "version_code",
+                    "manifest_version_code",
+                    "update_version_code",
+                    "pv_player",
+                )) put(key, "72232")
+            put("version_name", "7.2.2.32")
+            putAll(
+                mapOf(
+                    "scene" to "10",
+                    "from" to "detail_page_more_related",
+                    "book_id" to id,
+                    "new_search_middle_page" to "false",
+                    "bookstore_tab_type" to "0",
+                    "query_history_removed" to "false",
+                    "user_is_login" to "0",
+                    "bookstore_tab" to "0",
+                    "search_middle_page_version" to "0",
+                    "pad_column_detail" to "0",
+                    "hot_word_exchange" to "false",
+                    "device_level" to "3",
+                    "limit" to "0",
+                    "offset" to "0",
+                    "is_horizontal_screen" to "false",
+                    "reader_single_col_from_ip_strategy" to "false",
+                )
+            )
+        }
+
+    private fun relatedAll(id: String, force: Boolean): List<RelatedWork> {
         if (!force)
             synchronized(relatedCache) {
                 relatedCache[id]?.let {
@@ -620,37 +685,7 @@ constructor(
                 }
             }
         var failure: Exception? = null
-        val values =
-            VendorConstants.device.toMutableMap().apply {
-                for (key in
-                    listOf(
-                        "version_code",
-                        "manifest_version_code",
-                        "update_version_code",
-                        "pv_player",
-                    )) put(key, "72232")
-                put("version_name", "7.2.2.32")
-                putAll(
-                    mapOf(
-                        "scene" to "10",
-                        "from" to "detail_page_more_related",
-                        "book_id" to id,
-                        "new_search_middle_page" to "false",
-                        "bookstore_tab_type" to "0",
-                        "query_history_removed" to "false",
-                        "user_is_login" to "0",
-                        "bookstore_tab" to "0",
-                        "search_middle_page_version" to "0",
-                        "pad_column_detail" to "0",
-                        "hot_word_exchange" to "false",
-                        "device_level" to "3",
-                        "limit" to "0",
-                        "offset" to "0",
-                        "is_horizontal_screen" to "false",
-                        "reader_single_col_from_ip_strategy" to "false",
-                    )
-                )
-            }
+        val values = relatedValues(id)
         for (host in
             listOf(
                 "api5-normal-sinfonlinec.fqnovel.com",
@@ -664,7 +699,7 @@ constructor(
                     failure = IOException("相关作品接口暂无响应")
                     continue
                 }
-                val rows = RelatedWorks.parse(raw, id)
+                val rows = RelatedWorks.all(raw)
                 synchronized(relatedCache) {
                     if (relatedCache.size >= 8) relatedCache.remove(relatedCache.keys.first())
                     relatedCache[id] = rows
@@ -680,6 +715,9 @@ constructor(
 
     fun detail(id: String): Detail {
         require(id.matches(Regex("[0-9]{1,30}")))
+        // 官方播放请求体里 mixed_video_id_map 除了 "1004"（分集）还带一个 "1001"（剧集 id），
+        // 只在 player 场景出现、preload 没有。取流链路拿不到剧集号，这里顺手记下最近一次的。
+        lastSeriesId = id
         val o =
             router("$site/detail?series_id=$id")
                 .optJSONObject("detail_page")
@@ -730,7 +768,7 @@ constructor(
         //   本地真实身份（device-identity.txt）→ **两种口径都回 bytevc2**，服务端按身份自身档位供给。
         // 所以默认沿用官方口径 3；整集全 BVC2 时由 [streamLadder] 换成注册身份 + 1 重取一次。
         val payload =
-            """{"biz_param":{"detail_page_version":0,"device_level":$deviceLevel,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":true,"use_server_dns_scene":"cold_start_stage","video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}}}"""
+            """{"biz_param":{"detail_page_version":0,"device_level":$deviceLevel,"disable_digg_stat":false,"disable_video_relate_book":false,"need_all_video_definition":true,"need_mp4_align":false,"use_os_player":false,"use_server_dns":false,"video_platform":1024},"dr_scene":"player","mixed_video_id_map":{"1004":${JSONArray(ids)}${lastSeriesId?.let { ",\"1001\":[\"$it\"]" } ?: ""}}}"""
                 .toByteArray()
         val response = playbackResponse(payload, forceRegistered)
         val data = JSONObject(response)
@@ -775,6 +813,10 @@ constructor(
      */
     private fun playbackResponse(payload: ByteArray, forceRegistered: Boolean = false): String {
         var lastProblem: Exception? = null
+        // 每个域名的失败原因都留下来：只报最后一个的话，看不出「三个域名回的是同一句话」
+        // 还是「一个空 body、一个 404、一个业务码」，而这两者指向的问题完全不同。
+        val failures = mutableListOf<String>()
+        var sawPlaybackFailure = false
         // 这一趟里已经用过一台注册设备：下一轮必须换，否则必然空响应。
         var spentInThisCall = false
         for (host in PLAYBACK_MODEL_HOSTS) {
@@ -797,6 +839,8 @@ constructor(
                     identity = profile
                 }
             } catch (problem: PlaybackDeviceRegistrationException) {
+                // 注册失败保持原有异常类型：界面文案是「播放设备注册失败」，
+                // 包成「空响应」会让人以为是服务端不给内容，方向就错了。
                 lastProblem = problem
                 continue
             }
@@ -804,10 +848,14 @@ constructor(
                 return signedPlayback(host, identity, payload)
             } catch (problem: EmptyPlaybackResponseException) {
                 lastProblem = problem
+                sawPlaybackFailure = true
+                failures += (problem.message ?: "").substringAfter("（").trimEnd('）')
                 // 本地配置的真实身份也可能失效：丢掉它，下一个域名改用自动注册兜底。
                 if (identity.trusted) playbackSession.invalidate()
             }
         }
+        if (sawPlaybackFailure)
+            throw EmptyPlaybackResponseException(failures.joinToString(" | "))
         throw lastProblem ?: EmptyPlaybackResponseException()
     }
 
@@ -822,23 +870,48 @@ constructor(
                 putAll(identity.values)
                 putAll(PLAYBACK_QUERY)
             }
+        // 官方播放请求的 body 是 gzip 的，X-SS-STUB 取的是**压缩后**字节的 MD5
+        // （2026-11-11 抓包核对：BFB2CC4C… 同时等于 stub 与 md5(gzip body)）。
+        // 以前发的是明文 JSON，stub 也算明文，自洽但和官方形态不同，网关据此判定不是官方客户端。
+        val body = gzip(payload)
         // 签名器会用 device 里的 device_id / version_name 生成头部，必须与实际发出的 query 同源。
-        val signed = Signer(device = values).sign("$host$PLAYBACK_MODEL_PATH", values, payload)
+        val signed = Signer(device = values).sign("$host$PLAYBACK_MODEL_PATH", values, body)
         val headers = LinkedHashMap(signed.headers)
         headers["User-Agent"] = PLAYBACK_UA
-        if (identity.cookie.isNotBlank()) headers["Cookie"] = identity.cookie
-        val request = Signer.Request(signed.url, headers, payload)
+        headers["x-tt-store-region"] = "cn-bj"
+        headers["x-tt-store-region-src"] = "did"
+        // 官方播放请求里没有这两个头，多带会被当成异常客户端。
+        headers.remove("x-tt-request-tag")
+        headers.remove("x-tt-dt")
+        headers["lc"] = "101"
+        headers["Accept-Encoding"] = "gzip"
+        headers["Content-Encoding"] = "gzip"
+        headers["x-reading-request"] =
+            "${headers["x-ss-req-ticket"]}-${(Math.random() * 1_000_000_000L).toLong()}"
+        val cookie =
+            if (identity.cookie.isNotBlank()) identity.cookie
+            else "store-region=cn-bj; store-region-src=did"
+        if (cookie.isNotBlank()) headers["Cookie"] = cookie
+        val request = Signer.Request(signed.url, headers, body)
         // 连接层故障（连不上、读超时、5xx）重试一次是安全的：请求没到服务端，不会消耗掉
         // 播放接口那一次放行机会。空响应不重试，那是服务端已经明确拒绝的信号。
-        val body = text(signed.url, request, retryTransient = true)
-        val code =
+        val response = text(signed.url, request, retryTransient = true)
+        val trimmed = response.trim()
+        if (trimmed.isEmpty()) throw EmptyPlaybackResponseException("空 body，host=$host")
+        val json =
             try {
-                JSONObject(body).optInt("Code", JSONObject(body).optInt("code", 0))
+                JSONObject(trimmed)
             } catch (_: Exception) {
-                throw EmptyPlaybackResponseException()
+                throw EmptyPlaybackResponseException(
+                    "非 JSON，host=$host，${trimmed.length}B：${trimmed.take(120)}"
+                )
             }
-        if (code != 0) throw EmptyPlaybackResponseException()
-        return body
+        val code = json.optInt("Code", json.optInt("code", 0))
+        if (code != 0)
+            throw EmptyPlaybackResponseException(
+                "业务码 $code，host=$host：${trimmed.take(160)}"
+            )
+        return response
     }
 
     /**
@@ -1093,6 +1166,13 @@ constructor(
             .maxByOrNull { it.first }
             ?.second
 
+    /** 与官方一致的 gzip：同一份字节既用于签名，也用于 X-SS-STUB。 */
+    private fun gzip(data: ByteArray): ByteArray =
+        java.io.ByteArrayOutputStream().use { out ->
+            java.util.zip.GZIPOutputStream(out).use { it.write(data) }
+            out.toByteArray()
+        }
+
     private fun dimension(o: JSONObject, vararg keys: String): Int? {
         for (key in keys) {
             val value = o.optInt(key, 0)
@@ -1110,6 +1190,11 @@ constructor(
          */
         private val PLAYBACK_MODEL_HOSTS =
             listOf(
+                // 官方 7.4.3.32 播放时打的是调度域名 reading.snssdk.com，由它 307 到具体集群
+                // （2026-11-11 frida 抓包看到 origin_url=reading.snssdk.com → sinfonlineb）。
+                // 直连后两个集群也能通，但少了这一步调度。
+                "https://reading.snssdk.com",
+                "https://api5-normal-sinfonlineb.fqnovel.com",
                 "https://api5-normal-hl.fqnovel.com",
                 "https://api5-normal-sinfonlinec.fqnovel.com",
                 "https://api5-normal-lf.fqnovel.com",
@@ -1129,27 +1214,36 @@ constructor(
         /** 降级口径：服务端据此给兼容编码（实测同一集全档 bytevc1/HEVC，分辨率不变）。 */
         private const val FALLBACK_DEVICE_LEVEL = 1
 
-        /** 红果 7.2.9.32 的播放参数；旧版本号会被播放服务直接判空。 */
+        /**
+         * 播放参数，逐字段对齐官方 7.4.3.32 的真实请求（2026-11-11 frida 抓取）。
+         *
+         * 三处以前没注意的点：设备型号 / 品牌 / 分辨率取的是**本机真值**（模拟器上报
+         * ALT-AL10 / Huawei / 900*1600），服务端会拿它和 device_id 注册时的设备档案比对；
+         * `klink_egdi` 是设备指纹（同一台机器上恒定），缺了会被当成非官方客户端；
+         * `rom_version` 也必须带上。
+         */
         private val PLAYBACK_QUERY =
             linkedMapOf(
-                "version_code" to "72932",
-                "version_name" to "7.2.9.32",
-                "manifest_version_code" to "72932",
-                "update_version_code" to "72932",
+                "version_code" to "74332",
+                "version_name" to "7.4.3.32",
+                "manifest_version_code" to "74332",
+                "update_version_code" to "74332",
                 "channel" to "xiaomi_8662_64",
-                "pv_player" to "72932",
-                "device_type" to "SM-A546E",
-                "device_brand" to "Samsung",
+                "pv_player" to "74332",
+                "device_type" to "ALT-AL10",
+                "device_brand" to "Huawei",
                 "os_api" to "35",
                 "os_version" to "15",
-                "resolution" to "1600*900",
+                "resolution" to "900*1600",
                 "dpi" to "240",
                 "dragon_device_type" to "pad",
                 "is_android_pad_screen" to "1",
+                "rom_version" to "V417IR release-keys",
+                "klink_egdi" to "AAIOr0nvjh5XDmMzropzm0GoAVSgzByESBJNb5bQNgR9BidvXFGWO7mu",
             )
 
         private const val PLAYBACK_UA =
-            "com.phoenix.read/72932 (Linux; U; Android 15; zh_CN_#Hans; SM-A546E; Build/V417IR;tt-ok/3.12.13.20)"
+            "com.phoenix.read/74332 (Linux; U; Android 15; zh_CN_#Hans; ALT-AL10; Build/V417IR;tt-ok/3.12.13.20)"
 
         fun extractRouter(html: String): JSONObject {
             val marker = html.indexOf("_ROUTER_DATA")

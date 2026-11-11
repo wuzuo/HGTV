@@ -275,6 +275,25 @@ fun main(args: Array<String>) {
         }
         return
     }
+    if (args.contains("--seasons")) {
+        // 跨季连播要看的是：接口给的顺序、每部的季号，以及当前这一部落在哪。
+        val series = args.getOrNull(args.indexOf("--seasons") + 1) ?: return
+        try {
+            val rows = repository.seasons(series)
+            rows.forEachIndexed { position, row ->
+                val mark = if (row.series.id == series) "*" else " "
+                println(
+                    "$mark $position order=${row.order} season=${row.season} " +
+                        "upcoming=${row.upcoming} id=${row.series.id} title=${row.series.title}"
+                )
+            }
+            println("total=${rows.size}")
+        } finally {
+            repository.http.connectionPool.evictAll()
+            repository.http.dispatcher.executorService.shutdown()
+        }
+        return
+    }
     if (args.contains("--codecs")) {
         // 一次比对多集：只在「某集播不了、相邻集能播」时需要，看的是每档的编码。
         val episodes =

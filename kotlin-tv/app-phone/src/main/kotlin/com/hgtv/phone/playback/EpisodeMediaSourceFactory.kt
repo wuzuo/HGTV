@@ -32,8 +32,9 @@ class EpisodeMediaSourceFactory(
 ) : MediaSource.Factory {
 
     private val lock = Any()
-    private var opened: OpenedStream? = null
-    private var openedKey: String? = null
+
+    /** 已打开的流，按「集号/档位」索引；队尾是最近用过的。 */
+    private val opened = LinkedHashMap<String, OpenedStream>()
 
     override fun createMediaSource(mediaItem: MediaItem): MediaSource {
         val episodeId = mediaItem.mediaId
@@ -48,27 +49,45 @@ class EpisodeMediaSourceFactory(
     /** 打开（或复用）这一集的流；由加载线程调用，允许阻塞。 */
     internal fun video(episodeId: String, quality: Int, ahead: List<String>): RemoteVideo {
         val key = "$episodeId/$quality"
+        val started = android.os.SystemClock.elapsedRealtime()
         synchronized(lock) {
-            val cached = opened
-            if (cached != null && openedKey == key) return cached.video
-            // 先把状态摘干净再换流：opener 抛异常时不能让 opened 指着一个已经 close 的旧流，
-            // 否则下一次同 key 的请求会拿到关闭的连接，表现就是「重试也一直 source error」。
-            opened = null
-            openedKey = null
-            cached?.close()
+            opened[key]?.let { hit ->
+                // 命中就往队尾挪：淘汰的是「最久没用过的那一集」。
+                opened.remove(key)
+                opened[key] = hit
+                android.util.Log.i(
+                    "HGTV",
+                    "stream hit ${episodeId.takeLast(8)} cost=${android.os.SystemClock.elapsedRealtime() - started}ms",
+                )
+                return hit.video
+            }
             val fresh = opener(episodeId, quality, ahead)
-            opened = fresh
-            openedKey = key
+            opened[key] = fresh
+            evictLocked()
+            android.util.Log.i(
+                "HGTV",
+                "stream open ${episodeId.takeLast(8)} cost=${android.os.SystemClock.elapsedRealtime() - started}ms",
+            )
             return fresh.video
+        }
+    }
+
+    /**
+     * 一集一个连接：留 4 个够「上一集 / 当前 / 下一集」来回滑。整条剧集塞在同一个 playlist
+     * 里之后，切换会先后碰到多个 item，只留一个会把别的踢掉。
+     */
+    private fun evictLocked() {
+        while (opened.size > MAX_OPEN) {
+            val oldest = opened.keys.first()
+            opened.remove(oldest)?.let { runCatching { it.close() } }
         }
     }
 
     /** 播放器释放时调用：把底层连接一起关掉。 */
     fun release() {
         synchronized(lock) {
-            opened?.close()
-            opened = null
-            openedKey = null
+            opened.values.forEach { runCatching { it.close() } }
+            opened.clear()
         }
     }
 
@@ -86,6 +105,9 @@ class EpisodeMediaSourceFactory(
         const val EXTRA_QUALITY = "hgtv.quality"
         const val EXTRA_AHEAD = "hgtv.ahead"
         const val DEFAULT_QUALITY = 1080
+
+        /** 同时留几集的流。多了会占着连接和服务端额度，少了来回滑就总是重新握手。 */
+        private const val MAX_OPEN = 4
     }
 }
 

@@ -164,6 +164,9 @@ class MainActivity : Activity() {
         val cloudScope: Int,
     )
 
+    /** 当前这一部的下一季；null 表示没有（单季剧、或已经是最后一季）。 */
+    private var nextSeason: RelatedWork? = null
+
     private val detailTrail = java.util.ArrayDeque<DetailVisit>()
     private var relatedSection: RelatedWorksView? = null
     private var accountFavoriteButton: TextView? = null
@@ -3034,6 +3037,9 @@ class MainActivity : Activity() {
         screen = "detail"
         directPlayback = resume
         detail = null
+        // 详情还没回来之前，上一部留下的「下一季」必须清掉：否则这一部的最后一集
+        // 会接到上一部的季上去。
+        nextSeason = null
         synopsisExpanded = false
         val body = base(series.title)
         message(body, "正在加载剧集…")
@@ -3064,6 +3070,7 @@ class MainActivity : Activity() {
                     )
                 episodeIndex = target.index
                 group = episodeIndex / 20
+                resolveNextSeason(result)
                 if (resume) playEpisode(target.index, target.position, autoplay = detailAutoplay)
                 else showDetail(false)
             },
@@ -3075,6 +3082,39 @@ class MainActivity : Activity() {
                 }
             },
         )
+    }
+
+    /**
+     * 问一次「下一季是谁」。
+     *
+     * 走独立线程而不是共用的 [work]：那个槽位一次只装一件事，取季列表要是占上，
+     * 详情页上正在等的别的请求会被取消掉。回调里按剧 id 核对，防止切剧后晚到的结果覆盖。
+     */
+    private fun resolveNextSeason(data: Detail) {
+        val id = data.series.id
+        nextSeason = null
+        io.submit {
+            val rows = runCatching { repository.seasons(id) }.getOrNull().orEmpty()
+            val target = RelatedWorks.nextSeasonOf(rows, data.series.title)
+            main.post {
+                if (detail?.series?.id == id) {
+                    nextSeason = target
+                    android.util.Log.i(
+                        "HGTV",
+                        "next season of ${data.series.title} = ${target?.series?.title ?: "无"}",
+                    )
+                    // 控制层已经展开的话重建一次：否则「下一集」还按上一集数的状态灰着。
+                    if (panel && controls.visibility == View.VISIBLE) showPanel()
+                }
+            }
+        }
+    }
+
+    /** 最后一集结束时接上下一季；没有下一季就按原来的「本集已结束」收尾。 */
+    private fun enterNextSeason(): Boolean {
+        val target = nextSeason ?: return false
+        openDetail(target.series, resume = true, autoplay = true)
+        return true
     }
 
     private fun detailProgress(data: Detail, preferCloud: Boolean = false): WatchProgress? =
@@ -3744,10 +3784,16 @@ class MainActivity : Activity() {
                                         requestedAutoplay &&
                                         !pausedForLifecycle &&
                                         library.autoNext &&
-                                        episodeIndex < data.episodes.lastIndex
-                                )
-                                    playEpisode(episodeIndex + 1)
-                                else {
+                                        (
+                                            episodeIndex < data.episodes.lastIndex ||
+                                                nextSeason != null
+                                        )
+                                ) {
+                                    // 本季看完了就顺着季号接下一季，而不是停在最后一集。
+                                    if (episodeIndex < data.episodes.lastIndex)
+                                        playEpisode(episodeIndex + 1)
+                                    else enterNextSeason()
+                                } else {
                                     requestedAutoplay = false
                                     p.pause()
                                     playbackText.text = "本集已结束"
@@ -4408,7 +4454,7 @@ class MainActivity : Activity() {
             library.playbackSpeed,
             state,
             episodeIndex > 0,
-            episodeIndex < data.episodes.lastIndex,
+            episodeIndex < data.episodes.lastIndex || nextSeason != null,
         )
     }
 
@@ -4519,9 +4565,11 @@ class MainActivity : Activity() {
             }
         addVideoButton(transport, "下一集") {
                 if (episodeIndex < (detail?.episodes?.lastIndex ?: 0)) playEpisode(episodeIndex + 1)
+                else enterNextSeason()
             }
             .apply {
-                val enabled = episodeIndex < (detail?.episodes?.lastIndex ?: 0)
+                val enabled =
+                    episodeIndex < (detail?.episodes?.lastIndex ?: 0) || nextSeason != null
                 isEnabled = enabled
                 isFocusable = enabled
                 alpha = if (enabled) 1f else .4f

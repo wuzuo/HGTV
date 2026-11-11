@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.phone.player
 
+import android.content.Context
+import android.graphics.BitmapFactory
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
@@ -8,25 +10,36 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shadow
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextMeasurer
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
 import com.hgtv.core.Danmaku
 import com.hgtv.core.DanmakuEmoji
 import com.hgtv.core.DanmakuRepeat
 import com.hgtv.core.repeatGroups
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import kotlin.math.roundToInt
 
 /**
  * 压在画面上的弹幕层。
@@ -41,6 +54,10 @@ import com.hgtv.core.repeatGroups
  * 重复内容合并也与 TV 端同源（[repeatGroups]）：同一句在窗口内出现多次只画一条，
  * 文案挂上数量（`从第一季追到第五季的→ ×25`）。不合并的话，一句被刷屏的话会把
  * 八条轨道全占满，画面上只剩那一句——这就是「弹幕数量不对」的直接来源。
+ *
+ * 表情按平台标签画图（[DanmakuEmoji.parts]）：一条弹幕被切成「文字 + 表情」若干段，
+ * 文字按字体量宽、表情按字号正方形量宽。图跟 TV 端、跟 App 里是同一套 53 张；
+ * 图还没解码好时先画兜底字形，屏幕不会出现空档。
  */
 @Composable
 fun DanmakuLayer(
@@ -51,14 +68,25 @@ fun DanmakuLayer(
     modifier: Modifier = Modifier,
 ) {
     val measurer = rememberTextMeasurer()
+    val context = LocalContext.current
+    val density = LocalDensity.current
     var size by remember { mutableIntStateOf(0) }
     var width by remember { mutableIntStateOf(0) }
     var tick by remember { mutableLongStateOf(0L) }
+    var images by remember { mutableStateOf<Map<String, ImageBitmap>>(emptyMap()) }
+
+    // 53 张一共 236 KB，一次全解完常驻：按需解码会让第一屏的几条先闪一下字形。
+    LaunchedEffect(Unit) {
+        images = withContext(Dispatchers.IO) { PhoneEmojiImages.load(context.applicationContext) }
+    }
+
+    val textSize = (14f * scale).sp
+    val emojiSize = with(density) { textSize.toPx() * EMOJI_SCALE }
 
     val style =
         remember(scale) {
             TextStyle(
-                fontSize = (14f * scale).sp,
+                fontSize = textSize,
                 fontWeight = FontWeight.Medium,
                 color = Color.White,
                 shadow = Shadow(Color(0xCC000000), Offset(1.5f, 1.5f), 3f),
@@ -69,11 +97,11 @@ fun DanmakuLayer(
     val groups = remember(items) { repeatGroups(items, PHONE_REPEAT_WINDOW_MS) }
 
     val placed =
-        remember(groups, width, size, style) {
+        remember(groups, width, size, style, emojiSize) {
             if (width <= 0 || size <= 0 || groups.isEmpty()) {
                 emptyList()
             } else {
-                layoutLanes(groups, width, size, measurer, style)
+                layoutLanes(groups, width, size, measurer, style, emojiSize)
             }
         }
 
@@ -93,20 +121,53 @@ fun DanmakuLayer(
             if (elapsed > line.travelMs) break
             if (elapsed >= 0) {
                 val progress = elapsed / line.travelMs
-                val x = width - progress * (width + line.textWidth)
-                drawText(line.layout, topLeft = Offset(x, line.top))
+                var x = width - progress * (width + line.textWidth)
+                line.runs.forEach { run ->
+                    val layout = run.layout
+                    if (layout == null) {
+                        val image = images[run.asset]
+                        if (image != null) {
+                            // 表情按行高居中：偏上偏下都会跟旁边的字不在一条视觉线上。
+                            val top = line.top + (line.height - run.width) / 2f
+                            drawImage(
+                                image = image,
+                                dstOffset = IntOffset(x.roundToInt(), top.roundToInt()),
+                                dstSize = IntSize(run.width.roundToInt(), run.width.roundToInt()),
+                            )
+                        } else {
+                            run.fallback?.let { drawText(it, topLeft = Offset(x, line.top)) }
+                        }
+                    } else {
+                        drawText(layout, topLeft = Offset(x, line.top))
+                    }
+                    x += run.width
+                }
             }
             index -= 1
         }
     }
 }
 
+/** 一条弹幕里量好的一段：文字带排版结果，表情带图片名与兜底字形。 */
+private class MeasuredRun(
+    /** 文字段的排版结果；表情段为 null。 */
+    val layout: TextLayoutResult?,
+    /** 表情段的图片文件名；文字段为 null。 */
+    val asset: String?,
+    /** 表情段的兜底字形排版（图没到位时画它）；文字段为 null。 */
+    val fallback: TextLayoutResult?,
+    /** 这一段占多宽：文字是实际宽度，表情是固定的正方形边长。 */
+    val width: Float,
+)
+
 private class PlacedLine(
     /** 这一条（这一组重复弹幕）该出现的时刻。 */
     val startMs: Long,
-    val layout: androidx.compose.ui.text.TextLayoutResult,
+    val runs: List<MeasuredRun>,
     val textWidth: Float,
     val top: Float,
+    /** 这一条的行高：表情按它做垂直居中。 */
+    val height: Float,
     /** 从右边缘外到左边缘外所需时间；同一条弹幕在屏幕上的存活时长。 */
     val travelMs: Float,
 )
@@ -115,6 +176,9 @@ private class PlacedLine(
 private const val TRAVEL_MS = 8_500f
 private const val LANE_GAP_PX = 24f
 
+/** 表情边长相对字号的比例：比汉字略大一点，跟 App 里的观感接近。 */
+private const val EMOJI_SCALE = 1.15f
+
 /** 同一句在这段时间内出现多次只画一条：手机屏幕小，一场刷屏就能占满所有轨道。 */
 private const val PHONE_REPEAT_WINDOW_MS = 6_000L
 
@@ -122,33 +186,42 @@ private fun layoutLanes(
     groups: List<DanmakuRepeat>,
     width: Int,
     height: Int,
-    measurer: androidx.compose.ui.text.TextMeasurer,
+    measurer: TextMeasurer,
     style: TextStyle,
+    emojiSize: Float,
 ): List<PlacedLine> {
     val measured =
         groups.map { group ->
-            // 平台的弹幕表情不是字形而是 `[笑哭]` 这类方括号标签；换成对应字形后
-            // 交给系统字体画——手机上系统 emoji 字体本身就是彩色的，不需要再铺一层图片。
-            // 重复过的组带「×N」后缀，和 TV 端同一套文案。
-            val layout =
-                measurer.measure(
-                    AnnotatedString(DanmakuEmoji.displayText(group.label)),
-                    style,
-                    maxLines = 1,
-                )
-            group to layout
+            // 平台的弹幕表情不是字形而是 `[笑哭]` 这类方括号标签；按标签切成「文字 + 表情」，
+            // 表情画图、文字交给字体。重复过的组带「×N」后缀，和 TV 端同一套文案。
+            val runs = mutableListOf<MeasuredRun>()
+            var total = 0f
+            var lineHeight = 0f
+            DanmakuEmoji.parts(group.label).forEach { part ->
+                if (part.asset == null) {
+                    val layout = measurer.measure(AnnotatedString(part.text), style, maxLines = 1)
+                    runs += MeasuredRun(layout, null, null, layout.size.width.toFloat())
+                    total += layout.size.width
+                    lineHeight = maxOf(lineHeight, layout.size.height.toFloat())
+                } else {
+                    val fallback = measurer.measure(AnnotatedString(part.text), style, maxLines = 1)
+                    runs += MeasuredRun(null, part.asset, fallback, emojiSize)
+                    total += emojiSize
+                    lineHeight = maxOf(lineHeight, emojiSize)
+                }
+            }
+            Triple(group, runs, total to lineHeight)
         }
-    val lineHeight = measured.maxOfOrNull { it.second.size.height }?.toFloat() ?: 0f
-    if (lineHeight <= 0f) return emptyList()
-    val laneHeight = lineHeight + 16f
+    val laneHeight = (measured.maxOfOrNull { it.third.second } ?: 0f) + 16f
+    if (laneHeight <= 16f) return emptyList()
     // 只占上半屏：竖屏短剧的字幕和人物都在中间，弹幕压满会看不清。
     val laneCount = ((height * 0.36f) / laneHeight).toInt().coerceIn(1, 8)
     // 顶部留出控制条：返回键和标题就在这一带，弹幕从更下面才开始。
     val safeTop = height * 0.10f
     val freeAt = LongArray(laneCount) { 0L }
     val result = ArrayList<PlacedLine>(measured.size)
-    for ((group, layout) in measured) {
-        val textWidth = layout.size.width.toFloat()
+    for ((group, runs, metrics) in measured) {
+        val (textWidth, lineHeightOfLine) = metrics
         if (textWidth > width * 1.4f) continue // 超长弹幕直接丢，否则会挡住半屏
         val speed = (width + textWidth) / TRAVEL_MS
         var lane = -1
@@ -163,9 +236,10 @@ private fun layoutLanes(
         result +=
             PlacedLine(
                 startMs = group.firstMs,
-                layout = layout,
+                runs = runs,
                 textWidth = textWidth,
                 top = safeTop + lane * laneHeight,
+                height = lineHeightOfLine,
                 travelMs = TRAVEL_MS,
             )
     }
@@ -187,4 +261,41 @@ private fun lastStartedIndex(lines: List<PlacedLine>, now: Long): Int {
         }
     }
     return found
+}
+
+/**
+ * 弹幕表情图的进程级缓存。
+ *
+ * 53 张 120×120 的解码位图约 3 MB，全量常驻比按需解码划算：手机上一屏就那么几十条，
+ * 按需解码的收益被「第一次遇到某张图时先闪字形」抵消掉了。
+ */
+private object PhoneEmojiImages {
+    private var cache: Map<String, ImageBitmap>? = null
+
+    fun load(context: Context): Map<String, ImageBitmap> {
+        cache?.let { return it }
+        synchronized(this) {
+            cache?.let { return it }
+            val loaded =
+                context.assets
+                    .list(DIR)
+                    .orEmpty()
+                    .filter { it.endsWith(".webp") }
+                    .mapNotNull { name ->
+                        runCatching {
+                                context.assets.open("$DIR/$name").use {
+                                    BitmapFactory.decodeStream(it)?.asImageBitmap()?.let { image ->
+                                        name to image
+                                    }
+                                }
+                            }
+                            .getOrNull()
+                    }
+                    .toMap()
+            cache = loaded
+            return loaded
+        }
+    }
+
+    private const val DIR = "danmaku_emoji"
 }

@@ -21,10 +21,13 @@ android {
         applicationId = "io.github.wuzuo.hgtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 70
-        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.29"
+        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 71
+        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.30"
     }
     buildFeatures { buildConfig = true }
+    // 弹幕表情图与手机端共用一份：图必须和 core 里的 53 个标签表严格对齐，
+    // 两处各存一份迟早会漂。
+    sourceSets["main"].assets.srcDir(rootProject.file("assets-shared"))
     testOptions {
         unitTests.isIncludeAndroidResources = true
         unitTests.all {

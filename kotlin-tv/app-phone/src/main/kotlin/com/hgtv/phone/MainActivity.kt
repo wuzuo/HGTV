@@ -105,8 +105,8 @@ private fun HgtvApp() {
             )
         is Route.Player ->
             PlayerScreen(
-                series = route.series,
-                episodes = route.episodes,
+                initialSeries = route.series,
+                initialEpisodes = route.episodes,
                 startIndex = route.index,
                 onBack = pop,
             )

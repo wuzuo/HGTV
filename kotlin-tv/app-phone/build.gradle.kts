@@ -32,11 +32,13 @@ android {
         minSdk = 24
         targetSdk = 36
         // 发版时由 CI 用标签与 run_number 覆盖；本地默认值只决定 debug 包的版本号。
-        versionCode = System.getenv("HGTV_PHONE_VERSION_CODE")?.toInt() ?: 7
-        versionName = System.getenv("HGTV_PHONE_VERSION_NAME") ?: "0.1.5"
+        versionCode = System.getenv("HGTV_PHONE_VERSION_CODE")?.toInt() ?: 8
+        versionName = System.getenv("HGTV_PHONE_VERSION_NAME") ?: "0.1.6"
     }
 
     buildFeatures { compose = true }
+    // 与 TV 端共用同一套弹幕表情图（见 :app 的同名配置）。
+    sourceSets["main"].assets.srcDir(rootProject.file("assets-shared"))
 
     signingConfigs {
         create("delivery") {

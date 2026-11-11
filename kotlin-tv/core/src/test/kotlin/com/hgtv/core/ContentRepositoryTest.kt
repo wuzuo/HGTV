@@ -11,6 +11,16 @@ import org.json.JSONObject
 import org.junit.Assert.*
 import org.junit.Test
 
+/** 播放请求体现在是 gzip 压缩的，测试里统一解压后当 JSON 看。 */
+private fun okio.Buffer.readForTest(): String {
+    val bytes = readByteArray()
+    return if (bytes.size > 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())
+        java.util.zip.GZIPInputStream(bytes.inputStream()).use { it.readBytes() }
+            .toString(Charsets.UTF_8)
+    else String(bytes, Charsets.UTF_8)
+}
+
+
 class ContentRepositoryTest {
     @Test
     fun inlinePlaybackModelUsesItsOwnMetadataAndKeyWithoutFallbackRequest() {
@@ -123,7 +133,7 @@ class ContentRepositoryTest {
             else {
                 val buffer = okio.Buffer()
                 request.body?.writeTo(buffer)
-                val level = Regex("\"device_level\":(\\d+)").find(buffer.readUtf8())
+                val level = Regex("\"device_level\":(\\d+)").find(buffer.readForTest())
                     ?.groupValues
                     ?.get(1)
                     .orEmpty()
@@ -216,10 +226,10 @@ class ContentRepositoryTest {
                 assertEquals(if (key == "iid") "444" else "333", request.url.queryParameter(key))
             }
             // 播放接口用 7.2.9.32 的参数，旧版本号会被直接判空。
-            assertEquals("72932", request.url.queryParameter("version_code"))
+            assertEquals("74332", request.url.queryParameter("version_code"))
             val body = okio.Buffer()
             request.body!!.writeTo(body)
-            val payload = JSONObject(body.readUtf8())
+            val payload = JSONObject(body.readForTest())
             assertEquals("player", payload.getString("dr_scene"))
             assertEquals(
                 "123",
@@ -303,9 +313,9 @@ class ContentRepositoryTest {
         val error = assertThrows(IOException::class.java) { repo.stream("123") }
         assertTrue(error.message.orEmpty().contains("空响应"))
         assertFalse(error.message.orEmpty().contains("更新应用"))
-        // 三个播放域名各发一次（每次都要一台新设备身份），全都空才把原因交给界面。
+        // 五个播放入口各发一次（每次都要一台新设备身份），全都空才把原因交给界面。
         // 播放接口一台设备只放行一次，重复读同一个域名没有意义。
-        assertEquals(3, calls)
+        assertEquals(5, calls)
     }
 
     private fun inlinePlaybackFixture(): String =
@@ -327,7 +337,7 @@ class ContentRepositoryTest {
     }
 
     private fun playbackRequestIds(request: Request): List<String> {
-        val body = okio.Buffer().also { request.body!!.writeTo(it) }.readUtf8()
+        val body = okio.Buffer().also { request.body!!.writeTo(it) }.readForTest()
         val ids = JSONObject(body).getJSONObject("mixed_video_id_map").getJSONArray("1004")
         return (0 until ids.length()).map { ids.getString(it) }
     }
@@ -422,8 +432,8 @@ class ContentRepositoryTest {
             requests[0].url.queryParameter("cdid"),
             requests[1].url.queryParameter("cdid"),
         )
-        val first = okio.Buffer().also { requests[0].body!!.writeTo(it) }.readUtf8()
-        val second = okio.Buffer().also { requests[1].body!!.writeTo(it) }.readUtf8()
+        val first = okio.Buffer().also { requests[0].body!!.writeTo(it) }.readForTest()
+        val second = okio.Buffer().also { requests[1].body!!.writeTo(it) }.readForTest()
         assertEquals(first, second)
         assertEquals("POST", requests[1].method)
     }
@@ -450,7 +460,7 @@ class ContentRepositoryTest {
             assertThrows(Exception::class.java) { repo.streamLadder("123") }
             // 每个播放域名只发一次：同一域名重发只会继续拿到空响应。
             assertEquals(hosts.distinct(), hosts)
-            assertEquals(3, hosts.size)
+            assertEquals(5, hosts.size)
         }
     }
 

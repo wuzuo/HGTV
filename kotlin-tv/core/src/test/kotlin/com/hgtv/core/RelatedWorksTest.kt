@@ -122,4 +122,58 @@ class RelatedWorksTest {
             client.reserve(AccountCredentials("test-only"), RelatedWorks.parse(data, "111")[1])
         }
     }
+
+    // ─── 跨季连播：站在某一季上，下一季是谁 ───────────────────────────────
+
+    private fun work(id: String, title: String, order: Int, upcoming: Boolean = false) =
+        RelatedWork(
+            Series(id, title, badge = "全 10 集"),
+            if (order > 0) "第${order}季" else "同IP",
+            upcoming,
+            order,
+        )
+
+    @Test
+    fun nextSeasonIsTheNearestHigherSeasonNotTheNextRow() {
+        // 接口顺序不可信：第 5 季排在第 3 季前面，选中途那一部会跳错季。
+        val rows =
+            listOf(
+                work("1", "剧名第五部", 5),
+                work("2", "剧名", 0),
+                work("3", "剧名第三部", 3),
+                work("4", "同IP的另一部", 0),
+            )
+        assertEquals("3", RelatedWorks.nextSeasonOf(rows, "剧名第二部")?.series?.id)
+    }
+
+    @Test
+    fun firstSeasonWithoutNumberInTitleCanStillAdvance() {
+        // 实测《十八岁太奶奶驾到》第一部标题里没有任何序号，按 0 算就等于永远进不到第二部。
+        val rows = listOf(work("1", "十八岁太奶奶驾到", 1), work("2", "十八岁太奶奶驾到第二部", 2))
+        assertEquals(0, RelatedWorks.seasonOrderOf("十八岁太奶奶驾到"))
+        assertEquals("2", RelatedWorks.nextSeasonOf(rows, "十八岁太奶奶驾到")?.series?.id)
+    }
+
+    @Test
+    fun lastSeasonHasNoNextAndUpcomingIsSkipped() {
+        val rows = listOf(work("1", "第一部", 1), work("2", "第二部", 2))
+        assertNull(RelatedWorks.nextSeasonOf(rows, "第二部"))
+        // 待上线的季不能跳：进去只会是一个空播放页。
+        val reserved = listOf(work("1", "第一部", 1), work("2", "第二部", 2, upcoming = true))
+        assertNull(RelatedWorks.nextSeasonOf(reserved, "第一部"))
+    }
+
+    @Test
+    fun singleSeasonShowNeverJumpsIntoOtherDramas() {
+        val rows = listOf(work("8", "同IP甲", 0), work("9", "同IP乙", 0))
+        assertNull(RelatedWorks.nextSeasonOf(rows, "一部单季剧"))
+    }
+
+    @Test
+    fun seasonNumberIsOnlyReadFromSeasonMarkers() {
+        // 没有「第X季/部」的数字不是季号，否则「18岁太奶」会被当成第 18 季。
+        assertEquals(0, RelatedWorks.seasonOrderOf("18岁太奶在线训孙"))
+        assertEquals(5, RelatedWorks.seasonOrderOf("十八岁太奶奶驾到，重整家族荣耀第五部"))
+        assertEquals(12, RelatedWorks.seasonOrderOf("某剧 第12季"))
+    }
 }

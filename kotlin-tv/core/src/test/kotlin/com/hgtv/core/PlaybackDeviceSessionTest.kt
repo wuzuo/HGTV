@@ -211,9 +211,9 @@ class PlaybackDeviceSessionTest {
                 .build()
         val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
-        // 播放域名有 3 个，每个都要换一台设备身份（首台设备注册 1 次 + 换 2 次）。
-        assertEquals(3, registrations)
-        assertEquals(3, models)
+        // 播放域名有 5 个，每个都要换一台设备身份（首台设备注册 1 次 + 换 4 次）。
+        assertEquals(5, registrations)
+        assertEquals(5, models)
     }
 
     /** 设备未被放行（101000）同样换一次身份，不用等用户重启。 */

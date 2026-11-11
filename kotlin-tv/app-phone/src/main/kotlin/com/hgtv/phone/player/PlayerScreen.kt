@@ -7,6 +7,7 @@ import android.os.Build
 import android.util.Rational
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -34,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.style.TextAlign
@@ -52,6 +54,8 @@ import com.hgtv.core.Danmaku
 import com.hgtv.core.DeviceIdentityMonitor
 import com.hgtv.core.PlaybackQuality
 import com.hgtv.core.RecoveryBudget
+import com.hgtv.core.RelatedWork
+import com.hgtv.core.RelatedWorks
 import com.hgtv.core.Series
 import com.hgtv.phone.PhoneApp
 import com.hgtv.phone.R
@@ -64,9 +68,17 @@ import com.hgtv.phone.playback.PlaybackConnection
 import com.hgtv.phone.ui.Palette
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+
+/** 长按加速用的倍速。和设置里的倍速分开：松手要回到用户自己选的那档。 */
+private const val SPEED_UP_RATE = 2f
+
+/** 选集面板占下半屏，画面缩到原来的一半刚好让开。 */
+private const val SHRUNK_SCALE = 0.5f
 
 /**
  * 全屏播放页。
@@ -81,11 +93,15 @@ import kotlinx.coroutines.launch
 @androidx.annotation.OptIn(UnstableApi::class)
 @Composable
 fun PlayerScreen(
-    series: Series,
-    episodes: List<String>,
+    initialSeries: Series,
+    initialEpisodes: List<String>,
     startIndex: Int,
     onBack: () -> Unit,
 ) {
+    // 跨季连播要换「当前在播的哪一部」，所以 series/episodes 是可变状态而不是入参：
+    // 入参只决定起播的那一季。
+    var series by remember(initialSeries.id) { mutableStateOf(initialSeries) }
+    var episodes by remember(initialSeries.id) { mutableStateOf(initialEpisodes) }
     val context = LocalContext.current
     val activity = remember(context) { context.findActivity() }
     val window = remember(activity) { PlayerWindow(activity) }
@@ -106,7 +122,7 @@ fun PlayerScreen(
     }
     val controller = connection.controller
 
-    var index by remember {
+    var index by remember(initialSeries.id) {
         mutableIntStateOf(startIndex.coerceIn(0, episodes.lastIndex.coerceAtLeast(0)))
     }
     var quality by remember { mutableIntStateOf(settings.maxQuality) }
@@ -135,6 +151,12 @@ fun PlayerScreen(
     var hint by remember { mutableStateOf<String?>(null) }
 
     var dragSeekMs by remember { mutableFloatStateOf(Float.NaN) }
+
+    /** 长按加速是否生效。只影响速率，不写回设置——松手要能回到原来那档。 */
+    var speedUp by remember { mutableStateOf(false) }
+
+    /** 上一次换集 seek 的时刻：用来量「滑完到能播」的耗时，0 表示没有待测的切换。 */
+    var switchStarted by remember { mutableLongStateOf(0L) }
 
     /**
      * 拖动开始那一刻的播放位置。
@@ -224,6 +246,50 @@ fun PlayerScreen(
         }
     }
 
+    /**
+     * 下一季：相关作品里季号刚好大于当前这一季、且已上线的那一部。
+     *
+     * 红果把「第 N 季」和「同 IP」混在同一个列表里，季号只写在 tag 上；而当前这一季
+     * **不在列表里**（接口只给「其他」），所以自己的季号只能从剧名（`…第五部`）解析。
+     * 解析不出来就当它不是分季剧，不提供跨季——瞎猜会把用户送进另一部剧。
+     */
+    var nextSeason by remember { mutableStateOf<RelatedWork?>(null) }
+
+    LaunchedEffect(series.id) {
+        nextSeason = null
+        // 标题里没有季号的可能是第一部，不能靠它省掉请求，所以每部剧都问一次相关作品；
+        // 一个带序号的季都没有时 nextSeasonOf 会返回 null，单季剧就到此为止。
+        val rows =
+            runCatching {
+                    withContext(Dispatchers.IO) { PhoneApp.repository.seasons(series.id) }
+                }
+                .getOrNull()
+                .orEmpty()
+        nextSeason = RelatedWorks.nextSeasonOf(rows, series.title)
+    }
+
+    /** 进入下一季：本季按看完记下，换掉剧与集列表，回到新季第 1 集。 */
+    suspend fun enterNextSeason() {
+        val target = nextSeason ?: return
+        hint = "正在进入${target.season.ifBlank { "下一季" }}"
+        val detail =
+            runCatching {
+                    withContext(Dispatchers.IO) { PhoneApp.repository.detail(target.series.id) }
+                }
+                .getOrNull()
+        if (detail == null || detail.episodes.isEmpty()) {
+            hint = "下一季加载失败，请稍后再试"
+            return
+        }
+        persistProgress(completed = true, at = duration)
+        uploadToCloud()
+        recovery.reset()
+        series = detail.series
+        episodes = detail.episodes
+        index = 0
+        hint = target.season.ifBlank { "下一季" }
+    }
+
     // 离开播放页：落进度、停播放、回上一页。
     // 顶部箭头和系统返回键必须走同一条路——之前只有箭头调了 stop()，
     // 按返回键是从 MainActivity 的返回栈直接弹页，播放器还保持着 playWhenReady，
@@ -239,38 +305,64 @@ fun PlayerScreen(
     // 换集或换档位就是一次新的取流：重试预算重新算。
     LaunchedEffect(index, quality) { recovery.reset() }
 
-    // 换集 / 换档位 / 重试：重新装一条媒体项。取流由服务里的数据源在加载线程完成。
-    LaunchedEffect(controller, index, quality, attempt) {
-        val c = controller ?: return@LaunchedEffect
-        val id = episodes.getOrNull(index) ?: return@LaunchedEffect
-        failure = null
-        buffering = true
-        val target = pendingSeek.takeIf { it >= 0 } ?: resumeFor(id)
-        pendingSeek = -1L
-        android.util.Log.i("HGTV", "prepare episode=$id quality=$quality resumeAt=${target}ms")
-        val ahead = episodes.drop(index + 1).take(2)
+    /** 一条媒体项：集号、档位、以及要顺手预取的后两集。 */
+    fun episodeItem(id: String, position: Int): MediaItem {
         val extras =
             bundleOf(
                 EpisodeMediaSourceFactory.EXTRA_QUALITY to quality,
-                EpisodeMediaSourceFactory.EXTRA_AHEAD to ahead.joinToString(","),
+                EpisodeMediaSourceFactory.EXTRA_AHEAD to
+                    episodes.drop(position + 1).take(2).joinToString(","),
             )
-        val item =
-            MediaItem.Builder()
-                .setMediaId(id)
-                .setUri("hgtv://episode/$id")
-                .setMimeType(MimeTypes.VIDEO_MP4)
-                .setMediaMetadata(
-                    MediaMetadata.Builder()
-                        .setTitle(series.title)
-                        .setSubtitle("第 ${index + 1} 集")
-                        .setExtras(extras)
-                        .build()
-                )
-                .build()
-        c.setMediaItem(item)
-        c.prepare()
+        return MediaItem.Builder()
+            .setMediaId(id)
+            .setUri("hgtv://episode/$id")
+            .setMimeType(MimeTypes.VIDEO_MP4)
+            .setMediaMetadata(
+                MediaMetadata.Builder()
+                    .setTitle(series.title)
+                    .setSubtitle("第 ${position + 1} 集")
+                    .setExtras(extras)
+                    .build()
+            )
+            .build()
+    }
+
+    // 整条剧集一次性塞进同一个 playlist：换集只是 seek，不再重建媒体源、重新握手。
+    // 这是「滑动换集要不要等」的分水岭——重建一次要重新拉播放模型、签名、解析 moov。
+    val playlistKey = remember(episodes, quality) { episodes.hashCode() to quality }
+    var preparedKey by remember { mutableStateOf<Pair<Int, Int>?>(null) }
+
+    LaunchedEffect(controller, playlistKey, attempt) {
+        val c = controller ?: return@LaunchedEffect
+        if (episodes.isEmpty()) return@LaunchedEffect
+        failure = null
+        buffering = true
+        val items = episodes.mapIndexed { position, id -> episodeItem(id, position) }
+        val start = index.coerceIn(0, items.lastIndex)
+        val target = pendingSeek.takeIf { it >= 0 } ?: resumeFor(episodes[start])
+        pendingSeek = -1L
+        c.setMediaItems(items, start, 0L)
+        preparedKey = playlistKey
         resumeToApply = target
-        c.setPlaybackSpeed(speed)
+        android.util.Log.i(
+            "HGTV",
+            "playlist size=${items.size} start=${start + 1} resumeAt=${target}ms",
+        )
+        c.prepare()
+        // 换集/换档位时如果还按着屏幕，别把加速冲掉——松手才复原。
+        c.setPlaybackSpeed(if (speedUp) SPEED_UP_RATE else speed)
+        c.play()
+    }
+
+    // 同一份 playlist 内换集：只 seek，不重建。接着上次看到的位置续播。
+    LaunchedEffect(index, preparedKey) {
+        val c = controller ?: return@LaunchedEffect
+        if (preparedKey == null) return@LaunchedEffect
+        if (c.currentMediaItemIndex == index) return@LaunchedEffect
+        val id = episodes.getOrNull(index) ?: return@LaunchedEffect
+        switchStarted = android.os.SystemClock.elapsedRealtime()
+        android.util.Log.i("HGTV", "switch seek -> ${index + 1}")
+        c.seekTo(index, resumeFor(id).coerceAtLeast(0L))
         c.play()
     }
 
@@ -296,12 +388,24 @@ fun PlayerScreen(
                             c.seekTo(at)
                             position = at
                         }
+                        if (switchStarted > 0) {
+                            android.util.Log.i(
+                                "HGTV",
+                                "switch ready cost=${android.os.SystemClock.elapsedRealtime() - switchStarted}ms",
+                            )
+                            switchStarted = 0L
+                        }
                     }
                     if (state == Player.STATE_ENDED) {
                         persistProgress(completed = true, at = c.duration)
-                        if (settings.autoNext && index < episodes.lastIndex) {
-                            uploadToCloud()
-                            index += 1
+                        if (settings.autoNext) {
+                            if (index < episodes.lastIndex) {
+                                uploadToCloud()
+                                index += 1
+                            } else if (nextSeason != null) {
+                                // 本季最后一集播完接着下一季，和继续上滑走同一个入口。
+                                scope.launch { enterNextSeason() }
+                            }
                         }
                     }
                 }
@@ -483,11 +587,15 @@ fun PlayerScreen(
         }
     }
 
-    /** 上下滑换集：越界时只提示，不动当前播放。 */
+    /** 上下滑换集：最后一集继续往上滑就进下一季。 */
     fun switchEpisode(delta: Int) {
         val next = index + delta
         if (next !in episodes.indices) {
-            hint = if (delta > 0) "已经是最后一集" else "已经是第一集"
+            if (delta > 0 && nextSeason != null) {
+                scope.launch { enterNextSeason() }
+            } else {
+                hint = if (delta > 0) "已经是最后一集" else "已经是第一集"
+            }
             return
         }
         // 上一集按「看完」记：换回来时不至于又从中间开始。
@@ -517,6 +625,13 @@ fun PlayerScreen(
     }
 
     Box(Modifier.fillMaxSize().background(Color.Black)) {
+        // 选集面板铺在下半屏时，画面收到上方，不要被整块盖住——看不出还在播就以为断了。
+        // 缩放而不是重排版：PlayerView 的尺寸没变，Surface 不用重建，缩起来不掉帧。
+        val shrink by animateFloatAsState(
+            targetValue = if (sheet == PlayerSheet.Episodes) 1f else 0f,
+            animationSpec = tween(durationMillis = 220),
+            label = "shrink",
+        )
         // 画面与弹幕一起跟手：换集拖动时整层随手指走，手指松开或换集完成时归零。
         Box(
             Modifier
@@ -528,6 +643,13 @@ fun PlayerScreen(
                         if (size.height > 0f) (abs(episodeOffset) / size.height).coerceIn(0f, 1f)
                         else 0f
                     alpha = 1f - lift * 0.35f
+                    if (shrink > 0f) {
+                        val s = 1f - (1f - SHRUNK_SCALE) * shrink
+                        scaleX = s
+                        scaleY = s
+                        // 从顶边缩：面板占下半屏，画面剩的部分正好贴在面板上方。
+                        transformOrigin = TransformOrigin(0.5f, 0f)
+                    }
                 },
         ) {
             androidx.compose.ui.viewinterop.AndroidView(
@@ -541,13 +663,16 @@ fun PlayerScreen(
                 modifier = Modifier.fillMaxSize(),
             )
 
+            // 弹幕不跟着缩：字号缩一半读不清，缩窗期间直接淡掉。
             if (danmakuOn && danmaku.isNotEmpty() && !PipBridge.inPip) {
                 DanmakuLayer(
                     items = danmaku,
                     positionMillis = { controller?.currentPosition ?: 0L },
                     playing = playing,
                     scale = danmakuScale,
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .graphicsLayer { alpha = (1f - shrink * 2f).coerceIn(0f, 1f) },
                 )
             }
         }
@@ -622,10 +747,22 @@ fun PlayerScreen(
                             else -> episodeSettling = true
                         }
                     },
+                    // 按住不放 2 倍速：短剧常用姿势，松开回到用户选的那档。
+                    onSpeedUpStart = {
+                        speedUp = true
+                        controller?.setPlaybackSpeed(SPEED_UP_RATE)
+                    },
+                    onSpeedUpEnd = {
+                        speedUp = false
+                        controller?.setPlaybackSpeed(speed)
+                    },
+                    isSpeedUp = { speedUp },
                 )
         )
 
-        if (episodeHint != null) {
+        if (speedUp) {
+            PlayerHint("${SPEED_UP_RATE}x 加速中")
+        } else if (episodeHint != null) {
             PlayerHint(episodeHint!!)
         } else if (!dragSeekMs.isNaN()) {
             PlayerHint("${formatDuration(dragSeekMs.toLong())} / ${formatDuration(duration)}")
@@ -689,7 +826,8 @@ fun PlayerScreen(
                 )
         }
 
-        if (controlsVisible && !PipBridge.inPip) {
+        // 选集面板打开时把控制层一起收起：缩小的画面上压着标题和按钮，看不清画面。
+        if (controlsVisible && sheet == null && !PipBridge.inPip) {
             PlayerControls(
                 title = series.title,
                 episodeLabel = "第 ${index + 1} 集 / 共 ${episodes.size} 集",

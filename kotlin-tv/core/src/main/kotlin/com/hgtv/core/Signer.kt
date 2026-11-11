@@ -396,7 +396,8 @@ internal class Signer(
         var query: String
         for (offset in 0..127) {
             ticket = now + offset
-            query = encode(values + mapOf("ts" to ts.toString(), "_rticket" to ticket.toString()))
+            // 实测官方播放请求的 query 里只有 _rticket，没有 ts。
+            query = encode(values + mapOf("_rticket" to ticket.toString()))
             if (branch(query, body, ts) == 0) {
                 val url = "$base?$query"
                 val random = (random() * 65536).toInt()
@@ -409,7 +410,7 @@ internal class Signer(
                         "x-ss-req-ticket" to ticket.toString(),
                         "x-tt-request-tag" to "t=0;n=0",
                         "sdk-version" to "2",
-                        "passport-sdk-version" to "50561",
+                        "passport-sdk-version" to "5051452",
                         "x-xs-from-web" to "0",
                         "x-khronos" to ts.toString(),
                         "x-ladon" to be32(ts).base64(),
@@ -421,7 +422,7 @@ internal class Signer(
                     )
                 if (body != null) {
                     headers["Content-Type"] = "application/json; charset=UTF-8"
-                    headers["x-vc-bdturing-sdk-version"] = "3.7.2.cn"
+                    headers["x-vc-bdturing-sdk-version"] = "4.0.3.cn"
                     headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
                 }
                 return Request(url, headers, body)

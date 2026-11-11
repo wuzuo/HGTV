@@ -68,4 +68,10 @@ Users are responsible for ensuring their use complies with applicable laws
 and terms of service. The authors disclaim any responsibility for misuse
 of this software.
 
-评论与弹幕表情图使用 Microsoft Fluent Emoji（MIT），通过 GPL HGTV 参考项目取得；许可全文随 APK `assets/comment_emoji/LICENSE.txt` 与 `assets/danmaku_emoji/LICENSE.txt` 分发。为通用替代表情，非红果官方贴图。
+评论与弹幕的表情图改用红果官方客户端的表情贴图（`emoji_config.json` version 5，共 53 个，随 APK 的
+`assets/danmaku_emoji/NN.webp` 分发，TV 与手机端共用一份）。这样同一个 `[标签]` 在两边长得一致，
+不再出现「同一个笑哭、两种画法」。
+
+此前这两个目录放的是 Microsoft Fluent Emoji（MIT），随图附带的 `LICENSE.txt` 也一并移除——图片换成了
+官方贴图，那份 MIT 声明已经对不上，留着反而是错的。**这不是可以忽略的换图**：官方表情图是第三方美术资源，
+本项目只做客户端兼容，未获得再分发授权；如果在意这一点，需要换回自绘或可再分发的图集。

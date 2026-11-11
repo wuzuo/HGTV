@@ -2,54 +2,42 @@
 package com.hgtv.tv
 
 import android.content.Context
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.graphics.drawable.BitmapDrawable
 import android.text.SpannableStringBuilder
 import android.text.Spanned
 import android.text.style.ImageSpan
+import com.hgtv.core.DanmakuEmoji
 
 /**
- * Generic Fluent emoji illustrations, not the platform's original stickers. Unknown tags remain
- * intact.
+ * 输入框里已输入文本的即时预览：把 `[笑哭]` 这类标签换成表情图。
+ *
+ * 图片与标签表都跟弹幕层共用 [DanmakuEmoji]，所以输入框里看到的表情和飘过去的同一条弹幕
+ * 是同一张图；表里没有的标签原样保留。
  */
 class CommentEmoji(private val context: Context) {
-    private val names =
-        mapOf(
-            "笑哭" to "1f602",
-            "微笑" to "1f642",
-            "呲牙" to "1f601",
-            "大笑" to "1f606",
-            "流泪" to "1f622",
-            "大哭" to "1f62d",
-            "赞" to "1f44d",
-            "点赞" to "1f44d",
-            "鼓掌" to "1f44f",
-            "爱心" to "2764-fe0f",
-            "比心" to "2764-fe0f",
-            "玫瑰" to "1f339",
-            "捂脸" to "1f926",
-            "偷笑" to "1f92d",
-            "思考" to "1f914",
-            "害羞" to "1f60a",
-            "发怒" to "1f620",
-            "惊讶" to "1f62e",
+    private val cache = mutableMapOf<String, Bitmap>()
+
+    private val pattern =
+        Regex(
+            """\[([^\[\]【】［］\r\n]{1,16})\]|【([^\[\]【】［］\r\n]{1,16})】|［([^\[\]【】［］\r\n]{1,16})］"""
         )
-    private val cache = mutableMapOf<String, android.graphics.Bitmap>()
 
     fun render(text: String, size: Float): CharSequence {
         val result = SpannableStringBuilder(text)
-        val pattern = Regex("""(?:\[|［|【)([^\]］】]{1,20})(?:\]|］|】)""")
         for (match in pattern.findAll(text)) {
-            val file = names[match.groupValues[1]] ?: continue
+            val name = match.groupValues.drop(1).firstOrNull { it.isNotEmpty() } ?: continue
+            val asset = DanmakuEmoji.assetFor(name) ?: continue
             val bitmap =
-                cache[file]
+                cache[asset]
                     ?: runCatching {
-                            context.assets.open("comment_emoji/$file.webp").use {
+                            context.assets.open("danmaku_emoji/$asset").use {
                                 BitmapFactory.decodeStream(it)
                             }
                         }
                         .getOrNull()
-                        ?.also { cache[file] = it }
+                        ?.also { cache[asset] = it }
                     ?: continue
             val drawable =
                 BitmapDrawable(context.resources, bitmap).apply {

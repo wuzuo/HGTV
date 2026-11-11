@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.phone.player
 
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
 import kotlin.math.abs
@@ -37,13 +40,28 @@ fun Modifier.playerGestures(
     onSeekCommit: () -> Unit,
     onEpisodeDrag: (offsetPx: Float, fraction: Float) -> Unit,
     onEpisodeCommit: (fraction: Float) -> Unit,
+    onSpeedUpStart: () -> Unit,
+    onSpeedUpEnd: () -> Unit,
+    isSpeedUp: () -> Boolean,
 ): Modifier =
     this.pointerInput(doubleTapToPause) {
             detectTapGestures(
-                onTap = { onSingleTap() },
+                onTap = { if (!isSpeedUp()) onSingleTap() },
                 // null 表示不认双击：单击立即回调，无需等待双击超时。
-                onDoubleTap = if (doubleTapToPause) ({ _ -> onDoubleTap() }) else null,
+                onDoubleTap = if (doubleTapToPause) ({ _ -> if (!isSpeedUp()) onDoubleTap() }) else null,
+                // 按住不放看到哪：松手要能复原，但 detectTapGestures 不给「抬起」回调，
+                // 所以这里只负责开始，结束交给下面那个只看抬手的监听。
+                onLongPress = { onSpeedUpStart() },
             )
+        }
+        // 只观察抬手，不参与竞争：不管这一下是长按、拖动还是点空白，手指离开时都收回加速。
+        // 用 isSpeedUp 兜底而不是自己记状态，是为了避免两份状态在重组后对不上。
+        .pointerInput(Unit) {
+            awaitEachGesture {
+                awaitFirstDown(requireUnconsumed = false)
+                waitForUpOrCancellation()
+                if (isSpeedUp()) onSpeedUpEnd()
+            }
         }
         .pointerInput(Unit) {
             var axis = AXIS_NONE
