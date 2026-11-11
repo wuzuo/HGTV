@@ -7,26 +7,37 @@ import org.json.JSONObject
 /** Anonymous, read-only timed comments. No account session or write endpoint. */
 class TimedComments {
     private val transport = CommentTransport()
+
+    /**
+     * 按**窗口起点**缓存原始响应，键里不含整集时长。
+     *
+     * 之前键是 `series/episode/start/duration`：播放器拿到真实时长那一刻（`0 → 210000`）
+     * 整个列表的键全变，同一集要把每一页重新请求一遍，正是「进片一会儿才有弹幕」的来源。
+     * 实测 `playlet_item_duration` 只影响服务端怎么算 `next` 的边界，**不影响同一窗口
+     * 返回哪些条**（30s/60s/180s/210s/600s 五个取值，count 全是 78、next 全是 30000），
+     * 所以缓存原始响应、时长只在解析时用来裁剪，是安全的。
+     */
     private val cache = linkedMapOf<String, Pair<Long, String>>()
 
     fun read(series: String, episode: String, start: Long, duration: Long): JSONObject {
         require(series.matches(Regex("[0-9]{6,30}")) && episode.matches(Regex("[0-9]{6,30}")))
         require(start >= 0 && duration > start && duration <= 86400000)
-        val key = "$series/$episode/$start/$duration"
-        synchronized(cache) {
-            cache[key]
-                ?.takeIf { System.currentTimeMillis() - it.first < 60000 }
-                ?.let {
-                    return JSONObject(it.second)
-                }
+        val key = "$series/$episode/$start"
+        val now = System.currentTimeMillis()
+        val hit = synchronized(cache) { cache[key]?.takeIf { now - it.first < CACHE_TTL_MS }?.second }
+        if (hit != null) {
+            // 命中的脏数据不能一直毒害解析：解析失败就退回重新请求。
+            val parsed = runCatching { parse(JSONObject(hit), series, episode, start, duration) }
+            if (parsed.isSuccess) return parsed.getOrThrow()
         }
-        val result =
-            parse(fetch(series, episode, start, duration, COMMENT_HOST, emptyList()), series, episode, start, duration)
+        val fresh = fetch(series, episode, start, duration, COMMENT_HOST, emptyList())
+        // 先解析再入缓存：解析不过的响应不该留下。
+        val parsed = parse(fresh, series, episode, start, duration)
         synchronized(cache) {
-            cache[key] = System.currentTimeMillis() to result.toString()
-            while (cache.size > 64) cache.remove(cache.keys.first())
+            cache[key] = now to fresh.toString()
+            while (cache.size > 128) cache.remove(cache.keys.first())
         }
-        return result
+        return parsed
     }
 
     /**
@@ -76,6 +87,9 @@ class TimedComments {
     }
 
     companion object {
+        /** 原始响应留多久：一次播放里「时长到齐」「关掉再开弹幕」都会重拉，不该再发请求。 */
+        private const val CACHE_TTL_MS = 300_000L
+
         fun parse(
             result: JSONObject,
             series: String,

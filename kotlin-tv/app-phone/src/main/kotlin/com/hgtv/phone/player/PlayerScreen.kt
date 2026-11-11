@@ -65,6 +65,7 @@ import com.hgtv.phone.ui.Palette
 import kotlin.math.abs
 import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 
 /**
@@ -113,6 +114,9 @@ fun PlayerScreen(
     var danmakuOn by remember { mutableStateOf(settings.danmakuEnabled) }
     val danmakuScale = settings.danmakuScale
     var danmaku by remember { mutableStateOf<List<Danmaku>>(emptyList()) }
+
+    /** [danmaku] 属于哪一集：换集要先清空，不能把上一集的弹幕挂在新画面上。 */
+    var danmakuEpisode by remember { mutableStateOf("") }
     var comments by remember { mutableStateOf<List<CommentItem>?>(null) }
     var commentsError by remember { mutableStateOf<String?>(null) }
     var tiers by remember { mutableStateOf<List<Int>>(emptyList()) }
@@ -423,12 +427,21 @@ fun PlayerScreen(
     }
 
     // 弹幕：片长known之后按真实时长拉，未知时按估算值先拉一遍。
-    LaunchedEffect(series.id, episodeId, danmakuOn, if (duration > 0) 1 else 0) {
+    //
+    // 加载器是**流式**的（每拉完一窗就发一份累积快照），所以这里只要跟着收：
+    // 第一窗回来就能上屏，不用等整集拉完。时长从 0 变成真实值会重跑一次，
+    // 但窗口缓存按「起点」存，前几窗直接命中——不会像以前那样整集重新请求一遍。
+    LaunchedEffect(series.id, episodeId, danmakuOn, duration > 0) {
         if (!danmakuOn) {
             danmaku = emptyList()
+            danmakuEpisode = ""
             return@LaunchedEffect
         }
-        danmaku = DanmakuLoader.load(series.id, episodeId, duration)
+        if (danmakuEpisode != episodeId) {
+            danmaku = emptyList()
+            danmakuEpisode = episodeId
+        }
+        DanmakuLoader.load(series.id, episodeId, duration).collect { danmaku = it }
     }
 
     // 控制层空闲 4 秒自动收起。
