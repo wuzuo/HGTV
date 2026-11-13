@@ -25,6 +25,13 @@ fun main() {
         ).distinct()
     // 启动就读一次：前端通过 /identity 查询「有没有读到配置」，不必等到第一次播放。
     DeviceIdentityMonitor.resolve()
+    // 真机签名服务（可选）：装着重打包红果的手机会在局域网的 18089 端口上算 X-Medusa。
+    // 和 TV 端共用 core 的 RemoteSigner，但这里没人给它赋值，所以必须在启动时接上：
+    // 环境变量给默认值，运行中由前端的 /signing 端点改，不必重启客户端。
+    fun signingEndpoint(value: String?): String? =
+        value?.trim()?.trimEnd('/')?.takeIf { it.isNotEmpty() }
+            ?.takeIf { it.startsWith("http://") || it.startsWith("https://") }
+    RemoteSigner.endpoint = signingEndpoint(System.getenv("HGTV_SIGNING_SERVICE"))
     val repository=ContentRepository()
     // 冷启动接着上次刷：服务端在没有 session_id 时永远返回同一批冷启动内容，
     // 所以把分页会话与 offset 落盘，下次启动先恢复再请求。快照只含分页状态与已看 ID。
@@ -210,6 +217,24 @@ fun main() {
                         .put("deviceId",loaded?.identity?.deviceId ?: JSONObject.NULL)
                         .put("file",loaded?.file?.absolutePath ?: JSONObject.NULL)
                         .put("rejected",DeviceIdentityMonitor.wasRejected()))
+                }
+                // 签名服务：GET 看状态，POST 改地址并立刻生效（不必重启客户端）。
+                // 留空＝退回本机签名；诊断计数与上次错误直接透出，排查时不至于只看到「播不了」。
+                "signing" -> {
+                    if(exchange.requestMethod=="POST") {
+                        val raw=exchange.requestBody.use { it.readBytes().toString(Charsets.UTF_8) }.ifBlank { "{}" }
+                        val value=JSONObject(raw).optString("endpoint","").trim().trimEnd('/')
+                        val uri=runCatching { java.net.URI(value) }.getOrNull()
+                        require(value.isEmpty() || ((uri?.scheme == "http" || uri?.scheme == "https") && !uri?.host.isNullOrEmpty())) {
+                            "签名服务地址请填 http://IP:端口，或留空关闭"
+                        }
+                        RemoteSigner.endpoint=value.takeIf { it.isNotEmpty() }
+                    }
+                    json(exchange,JSONObject()
+                        .put("endpoint",RemoteSigner.endpoint ?: "")
+                        .put("successes",RemoteSigner.successes)
+                        .put("failures",RemoteSigner.failures)
+                        .put("lastError",RemoteSigner.lastError ?: JSONObject.NULL))
                 }
                 "comment-page" -> json(exchange,appCommentPages.read(query["series"].orEmpty(),query["episode"].orEmpty(),query["cursor"].orEmpty()))
                 "danmaku" -> json(exchange,timedComments.read(query["series"].orEmpty(),query["episode"].orEmpty(),query["start"]?.toLong() ?: -1,query["duration"]?.toLong() ?: -1))

@@ -25,7 +25,7 @@ class Bridge {
   final IOSink _log;
   final http.Client _client;
 
-  static Future<Bridge> launch() async {
+  static Future<Bridge> launch({String signingService = ''}) async {
     final root = _appRoot();
     final bridgeDir = _bridgeDir(root);
     final java = _javaExecutable(root);
@@ -49,7 +49,11 @@ class Bridge {
       workingDirectory: bridgeDir,
       // 子进程的工作目录是 bridge 目录，但用户放配置的直觉位置是 exe 旁边。
       // 把程序根目录显式告诉它，免得配置放在程序目录却读不到（且没有任何提示）。
-      environment: {'HGTV_APP_ROOT': root},
+      // 签名服务地址只在启动时传一次，运行中改动由 /signing 端点下发，无需重启。
+      environment: {
+        'HGTV_APP_ROOT': root,
+        if (signingService.isNotEmpty) 'HGTV_SIGNING_SERVICE': signingService,
+      },
       runInShell: false,
     );
     process.stderr.transform(utf8.decoder).listen(log.writeln);

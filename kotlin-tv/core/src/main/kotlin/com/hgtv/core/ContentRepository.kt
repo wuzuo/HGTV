@@ -299,7 +299,17 @@ constructor(
                 }
                 val bytes = out.toByteArray()
                 if (bytes.size > 16 * 1024 * 1024) throw IOException("内容响应过大")
-                val content = String(bytes, Charsets.UTF_8)
+                // 播放接口显式带了 `Accept-Encoding: gzip`：OkHttp 只在「这个头是它自己加的」
+                // 时才自动解压，这里是我们加的，所以拿到的是 gzip 原始字节。
+                // 不解压就会把二进制当文本，报「非 JSON」（真机签名跑通后才暴露出来）。
+                val decoded =
+                    if (response.header("Content-Encoding").equals("gzip", ignoreCase = true) ||
+                        (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())
+                    ) {
+                        java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(bytes))
+                            .use { it.readBytes() }
+                    } else bytes
+                val content = String(decoded, Charsets.UTF_8)
                 if (retryEmptyPlayback && content.isBlank()) throw EmptyPlaybackResponseException()
                 content
             }
@@ -875,7 +885,11 @@ constructor(
         // 以前发的是明文 JSON，stub 也算明文，自洽但和官方形态不同，网关据此判定不是官方客户端。
         val body = gzip(payload)
         // 签名器会用 device 里的 device_id / version_name 生成头部，必须与实际发出的 query 同源。
-        val signed = Signer(device = values).sign("$host$PLAYBACK_MODEL_PATH", values, body)
+        val path = "$host$PLAYBACK_MODEL_PATH"
+        // 配了签名服务就让它算（本机移植版的 X-Medusa 结构与真机不一致，网关会静默返回空包）；
+        // 服务不可达时回退本机签名，行为与以前一致。
+        val signed =
+            RemoteSigner.sign(path, values, body) ?: Signer(device = values).sign(path, values, body)
         val headers = LinkedHashMap(signed.headers)
         headers["User-Agent"] = PLAYBACK_UA
         headers["x-tt-store-region"] = "cn-bj"

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-only
 package com.hgtv.tv
 
+import com.hgtv.core.RemoteSigner
 import com.hgtv.playback.PlaybackCompat
 import com.hgtv.playback.CodecCapabilities
 import android.app.ActivityManager
@@ -145,6 +146,11 @@ object PlaybackDiagnostics {
         return buildString {
             appendLine("设备：${deviceLine(context)}")
             appendLine("画面输出：${PlaybackCompat.label()}")
+            appendLine(
+                "签名服务：${RemoteSigner.endpoint ?: "未启用"}  " +
+                    "成功 ${RemoteSigner.successes} 次 / 失败 ${RemoteSigner.failures} 次",
+            )
+            RemoteSigner.lastError?.let { appendLine("签名服务上次错误：$it") }
             val keys = CodecCapabilities.learnedKeys()
             appendLine("已学到的解码器失败记录：${keys.size} 条")
             // 列出来，否则只看条数分不清是「真解码不了」还是误记 —— 误记会让整类内容播不了。

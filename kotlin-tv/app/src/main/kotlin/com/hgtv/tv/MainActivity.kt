@@ -582,6 +582,75 @@ class MainActivity : Activity() {
         dialog.getButton(AlertDialog.BUTTON_POSITIVE)?.requestFocus()
     }
 
+    private fun signingPrefs() = getSharedPreferences("signing_service", Context.MODE_PRIVATE)
+
+    /** 设置项优先于编译期注入的默认值；两者都可能为空（＝不启用远程签名）。 */
+    private fun currentSigningEndpoint(): String =
+        signingPrefs().getString("base_url", null)?.takeIf { it.isNotBlank() }
+            ?: BuildConfig.SIGNING_SERVICE.takeIf { it.isNotBlank() }
+            ?: ""
+
+    private fun signingServiceLabel(): String =
+        "签名服务  ·  ${if (currentSigningEndpoint().isBlank()) "未启用" else "已配置"}"
+
+    /**
+     * 让电视上也能改签名服务地址，不用 adb 改 SharedPreferences。
+     * 服务跑在和电视同一局域网的 PC/服务器上，形如 http://192.168.0.102:18089。
+     */
+    private fun showSigningServiceDialog(button: TextView) {
+        val input =
+            EditText(this).apply {
+                setText(currentSigningEndpoint())
+                hint = "http://192.168.0.102:18089"
+                inputType =
+                    android.text.InputType.TYPE_CLASS_TEXT or
+                        android.text.InputType.TYPE_TEXT_VARIATION_URI
+                isSingleLine = true
+                setTextColor(TvStyle.textStrong)
+                setPadding(dp(16), dp(12), dp(16), dp(12))
+            }
+        val wrap =
+            FrameLayout(this).apply {
+                setPadding(dp(20), dp(4), dp(20), dp(4))
+                addView(input, FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, -2))
+            }
+        val dialog =
+            AlertDialog.Builder(this)
+                .setTitle("签名服务")
+                .setMessage(
+                    "留空＝只用本机签名（播放接口可能返回空包）。\n" +
+                        "填写独立签名版手机（或运行签名服务的电脑）的地址，需与电视在同一局域网。\n" +
+                        "服务会自动把播放请求里的设备身份对齐到签名手机。",
+                )
+                .setView(wrap)
+                .setPositiveButton("保存") { _, _ ->
+                    val value = input.text.toString().trim().trimEnd('/')
+                    signingPrefs().edit().putString("base_url", value).apply()
+                    RemoteSigner.endpoint = value.takeIf { it.isNotBlank() }
+                    button.text = signingServiceLabel()
+                    Toast.makeText(
+                            this,
+                            if (value.isBlank()) "已关闭远程签名" else "签名服务：$value",
+                            Toast.LENGTH_LONG,
+                        )
+                        .show()
+                }
+                .setNeutralButton("清除") { _, _ ->
+                    signingPrefs().edit().remove("base_url").apply()
+                    RemoteSigner.endpoint = BuildConfig.SIGNING_SERVICE.takeIf { it.isNotBlank() }
+                    button.text = signingServiceLabel()
+                    Toast.makeText(this, "已恢复默认值", Toast.LENGTH_SHORT).show()
+                }
+                .setNegativeButton("取消", null)
+                .create()
+        dialog.show()
+        decorateDialog(dialog)
+        input.requestFocus()
+        input.setSelection(input.text.length)
+        val imm = getSystemService(Context.INPUT_METHOD_SERVICE) as InputMethodManager
+        imm.showSoftInput(input, InputMethodManager.SHOW_IMPLICIT)
+    }
+
     /**
      * 设置页那一行文案：三种状态各说一句，用户不用再靠猜。
      *
@@ -689,6 +758,9 @@ class MainActivity : Activity() {
                 )
         }
         TvStyle.applyTheme(TvThemeStore.load(this))
+        // 签名服务地址（如 http://192.168.0.102:18089）：配了就让真机算 X-Medusa。
+        // 优先级：设置项 > 编译期注入的默认值；都没配就走本机签名，行为与以前一致。
+        RemoteSigner.endpoint = currentSigningEndpoint().takeIf { it.isNotBlank() }
         // 低内存设备：焦点切换不做缩放动画，柔光位图也降到 80% 紧致度。
         if ((getSystemService(android.app.ActivityManager::class.java)?.isLowRamDevice) == true) {
             TvStyle.animate = false
@@ -2821,6 +2893,9 @@ class MainActivity : Activity() {
         heading(device, "应用与更新", "检查新版、查看开源信息")
         // 配置读没读到、为什么没读到，在这里常驻可查：Toast 一闪而过，过后就没法确认了。
         identitySetting = setting(device, identityStatusLabel()) { showIdentityStatus() }
+        lateinit var signingButton: TextView
+        signingButton =
+            setting(device, signingServiceLabel()) { showSigningServiceDialog(signingButton) }
         lateinit var diagnostics: TextView
         diagnostics =
             setting(device, "播放诊断") {

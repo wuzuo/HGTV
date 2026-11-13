@@ -21,8 +21,15 @@ android {
         applicationId = "io.github.wuzuo.hgtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 71
-        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.30"
+        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 72
+        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.31"
+        // 真机签名服务地址（可选，填独立签名版手机或运行签名服务的电脑）。
+        // 空字符串＝不启用，播放仍走本机签名；电视上也可在「设置 → 签名服务」里改。
+        buildConfigField(
+            "String",
+            "SIGNING_SERVICE",
+            "\"${System.getenv("HGTV_SIGNING_SERVICE") ?: ""}\"",
+        )
     }
     buildFeatures { buildConfig = true }
     // 弹幕表情图与手机端共用一份：图必须和 core 里的 53 个标签表严格对齐，

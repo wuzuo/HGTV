@@ -97,7 +97,7 @@ class _GuoyingAppState extends State<GuoyingApp> with WindowListener {
     });
     Bridge? bridge;
     try {
-      bridge = await Bridge.launch();
+      bridge = await Bridge.launch(signingService: widget.store.signingService);
       final session = AppSession(api: Api(bridge), store: widget.store)
         ..setBridgeStatus('本机服务已连接');
       if (!mounted) return;

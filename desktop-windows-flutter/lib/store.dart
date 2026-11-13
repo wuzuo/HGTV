@@ -41,6 +41,10 @@ class LocalStore extends ChangeNotifier {
   bool autoNext = true;
   String themeMode = 'system';
 
+  /// 真机签名服务地址，形如 http://192.168.0.101:18089；空串＝只用本机签名。
+  /// 与 TV 端的「设置 → 签名服务」同一个语义，存在 settings.json 里跨启动保留。
+  String signingService = '';
+
   /// 弹幕设置：显示方式、速度档位、字号缩放与透明度，与 TV 端同一套取值。
   DanmakuMode danmakuMode = DanmakuMode.full;
   DanmakuSpeed danmakuSpeed = DanmakuSpeed.normal;
@@ -106,6 +110,8 @@ class LocalStore extends ChangeNotifier {
       autoNext = root['autoNext'] as bool? ?? true;
       final mode = root['themeMode'] as String? ?? 'system';
       themeMode = const {'light', 'dark', 'system'}.contains(mode) ? mode : 'system';
+      final savedSigning = root['signingService'];
+      signingService = savedSigning is String ? savedSigning.trim() : '';
       danmakuMode = DanmakuMode.fromStored(root['danmakuMode'] as String?);
       danmakuSpeed = DanmakuSpeed.fromStored(root['danmakuSpeed'] as String?);
       danmakuScale = DanmakuStyle.scale((root['danmakuScale'] as num?)?.toDouble() ?? 1);
@@ -180,6 +186,14 @@ class LocalStore extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateSigningService(String value) {
+    final next = value.trim().replaceAll(RegExp(r'/+$'), '');
+    if (signingService == next) return;
+    signingService = next;
+    _savePreferences();
+    notifyListeners();
+  }
+
   void updateDanmakuMode(DanmakuMode value) {
     if (danmakuMode == value) return;
     danmakuMode = value;
@@ -238,6 +252,7 @@ class LocalStore extends ChangeNotifier {
             'speed': speed,
             'autoNext': autoNext,
             'themeMode': themeMode,
+            'signingService': signingService,
             'danmakuMode': danmakuMode.storedValue,
             'danmakuSpeed': danmakuSpeed.storedValue,
             'danmakuScale': danmakuScale,

@@ -129,6 +129,8 @@ class SettingsScreen extends StatelessWidget {
               ),
             ]),
             const SizedBox(height: 20),
+            _SigningSection(session: session),
+            const SizedBox(height: 20),
             _section(context, '关于', [
               Text('${AppInfo.product} ${AppInfo.version}'),
               const SizedBox(height: 4),
@@ -178,25 +180,6 @@ class SettingsScreen extends StatelessWidget {
           ],
         );
       },
-    );
-  }
-
-  Widget _section(BuildContext context, String title, List<Widget> children) {
-    final scheme = Theme.of(context).colorScheme;
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(18),
-      decoration: BoxDecoration(
-        color: scheme.surfaceContainerLow,
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          SectionTitle(title),
-          ...children,
-        ],
-      ),
     );
   }
 
@@ -291,6 +274,134 @@ class SettingsScreen extends StatelessWidget {
         ..hideCurrentSnackBar()
         ..showSnackBar(SnackBar(content: Text('无法打开目录：$problem')));
     }
+  }
+}
+
+Widget _section(BuildContext context, String title, List<Widget> children) {
+  final scheme = Theme.of(context).colorScheme;
+  return Container(
+    width: double.infinity,
+    padding: const EdgeInsets.all(18),
+    decoration: BoxDecoration(
+      color: scheme.surfaceContainerLow,
+      borderRadius: BorderRadius.circular(16),
+    ),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        SectionTitle(title),
+        ...children,
+      ],
+    ),
+  );
+}
+
+/// 真机签名服务：地址既写进 settings.json，也通过 /signing 端点下发给本机服务，
+/// 因此改完当场生效，不必重启客户端。
+class _SigningSection extends StatefulWidget {
+  const _SigningSection({required this.session});
+
+  final AppSession session;
+
+  @override
+  State<_SigningSection> createState() => _SigningSectionState();
+}
+
+class _SigningSectionState extends State<_SigningSection> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.session.store.signingService,
+  );
+  String _status = '';
+  bool _busy = false;
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  Future<void> _apply(String value) async {
+    final endpoint = value.trim().replaceAll(RegExp(r'/+$'), '');
+    if (endpoint.isNotEmpty &&
+        !(endpoint.startsWith('http://') || endpoint.startsWith('https://'))) {
+      setState(() => _status = '地址要以 http:// 或 https:// 开头');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _status = '';
+    });
+    try {
+      final state = await widget.session.api.setSigningService(endpoint);
+      if (!mounted) return;
+      widget.session.store.updateSigningService(endpoint);
+      setState(() {
+        _status = endpoint.isEmpty
+            ? '已关闭远程签名，播放改回本机签名'
+            : '已启用并立即生效 · 成功 ${state['successes'] ?? 0} 次 / '
+                '失败 ${state['failures'] ?? 0} 次';
+      });
+    } catch (problem) {
+      if (mounted) setState(() => _status = '保存失败：$problem');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return _section(context, '签名服务', [
+      Text(
+        '播放接口的 X-Medusa 由真机上的红果签名服务计算。手机装好独立签名版、'
+        '与电脑在同一局域网后，把它的地址填在这里；服务会顺带把设备身份对齐。',
+        style: TextStyle(fontSize: 12, height: 1.6, color: scheme.onSurfaceVariant),
+      ),
+      const SizedBox(height: 12),
+      TextField(
+        controller: _controller,
+        enabled: !_busy,
+        decoration: const InputDecoration(
+          labelText: '服务地址',
+          hintText: 'http://192.168.0.101:18089',
+          isDense: true,
+          border: OutlineInputBorder(),
+        ),
+        onSubmitted: _busy ? null : (value) => _apply(value),
+      ),
+      const SizedBox(height: 10),
+      Row(
+        children: [
+          FilledButton(
+            onPressed: _busy ? null : () => _apply(_controller.text),
+            child: const Text('保存并启用'),
+          ),
+          const SizedBox(width: 10),
+          OutlinedButton(
+            onPressed: _busy
+                ? null
+                : () {
+                    _controller.clear();
+                    _apply('');
+                  },
+            child: const Text('关闭'),
+          ),
+        ],
+      ),
+      if (_status.isNotEmpty) ...[
+        const SizedBox(height: 10),
+        Text(
+          _status,
+          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+        ),
+      ],
+      const SizedBox(height: 6),
+      Text(
+        '留空＝只用本机签名（播放接口可能返回空包）。手机重启后打开一次红果并让它'
+        '留在后台；手机 IP 变了要回来改地址。',
+        style: TextStyle(fontSize: 11, height: 1.6, color: scheme.onSurfaceVariant),
+      ),
+    ]);
   }
 }
 

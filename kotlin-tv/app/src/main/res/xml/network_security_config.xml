@@ -1,4 +1,8 @@
 <network-security-config>
-    <base-config cleartextTrafficPermitted="false"/>
+    <!-- 签名服务是局域网里的 HTTP 服务（地址由用户在「设置 → 签名服务」里填，
+         可能是任意内网 IP，或模拟器上的 10.0.2.2）。network-security-config 的
+         base-config 会覆盖 manifest 的 usesCleartextTraffic，必须在这里一并放开，
+         否则 OkHttp 会抛 CLEARTEXT communication ... not permitted。 -->
+    <base-config cleartextTrafficPermitted="true"/>
     <domain-config cleartextTrafficPermitted="true"><domain includeSubdomains="true">douyinvod.com</domain><domain includeSubdomains="true">byteicdn.com</domain><domain includeSubdomains="true">byteimg.com</domain></domain-config>
 </network-security-config>

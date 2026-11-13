@@ -96,6 +96,12 @@ class Api {
     );
   }
 
+  /// 真机签名服务：GET 看状态，POST 改地址并当场生效（本机服务不必重启）。
+  Future<Map<String, dynamic>> signingStatus() => _bridge.get('signing');
+
+  Future<Map<String, dynamic>> setSigningService(String endpoint) =>
+      _bridge.post('signing', {'endpoint': endpoint});
+
   /// Warms the first few megabytes of [episodeId] in the bridge so the matching
   /// [play] call can skip network preparation when auto-advancing.
   Future<void> preload(String episodeId, {int quality = 1080}) =>
