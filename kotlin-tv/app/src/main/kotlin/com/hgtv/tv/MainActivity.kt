@@ -591,11 +591,14 @@ class MainActivity : Activity() {
             ?: ""
 
     private fun signingServiceLabel(): String =
-        "签名服务  ·  ${if (currentSigningEndpoint().isBlank()) "未启用" else "已配置"}"
+        "签名服务（兜底）  ·  ${if (currentSigningEndpoint().isBlank()) "未启用" else "已配置"}"
 
     /**
      * 让电视上也能改签名服务地址，不用 adb 改 SharedPreferences。
      * 服务跑在和电视同一局域网的 PC/服务器上，形如 http://192.168.0.102:18089。
+     *
+     * 从 0.1.32 起这不是必需项：本机签名已能独立完成播放（真实 Argus/Ladon，不带 medusa），
+     * 这里只作为本机签名出错时的兜底。
      */
     private fun showSigningServiceDialog(button: TextView) {
         val input =
@@ -616,11 +619,12 @@ class MainActivity : Activity() {
             }
         val dialog =
             AlertDialog.Builder(this)
-                .setTitle("签名服务")
+                .setTitle("签名服务（可选）")
                 .setMessage(
-                    "留空＝只用本机签名（播放接口可能返回空包）。\n" +
-                        "填写独立签名版手机（或运行签名服务的电脑）的地址，需与电视在同一局域网。\n" +
-                        "服务会自动把播放请求里的设备身份对齐到签名手机。",
+                    "留空就行：本机签名已经能直接播放，不需要任何外部服务。\n" +
+                        "只有在播放一直不出画面、想换一个签名器时，才填跑签名服务的手机或电脑地址，" +
+                        "需与电视在同一局域网。\n" +
+                        "填了之后也只在本机签名出错时才会用它，它会顺带把设备身份对齐到服务端。",
                 )
                 .setView(wrap)
                 .setPositiveButton("保存") { _, _ ->
@@ -758,8 +762,8 @@ class MainActivity : Activity() {
                 )
         }
         TvStyle.applyTheme(TvThemeStore.load(this))
-        // 签名服务地址（如 http://192.168.0.102:18089）：配了就让真机算 X-Medusa。
-        // 优先级：设置项 > 编译期注入的默认值；都没配就走本机签名，行为与以前一致。
+        // 外部签名服务地址（如 http://192.168.0.102:18089）：**可选**，只作本机签名失败时的兜底。
+        // 优先级：设置项 > 编译期注入的默认值；都没配就只走本机签名（默认推荐）。
         RemoteSigner.endpoint = currentSigningEndpoint().takeIf { it.isNotBlank() }
         // 低内存设备：焦点切换不做缩放动画，柔光位图也降到 80% 紧致度。
         if ((getSystemService(android.app.ActivityManager::class.java)?.isLowRamDevice) == true) {

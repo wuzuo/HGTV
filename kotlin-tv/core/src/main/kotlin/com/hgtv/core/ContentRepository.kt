@@ -886,10 +886,16 @@ constructor(
         val body = gzip(payload)
         // 签名器会用 device 里的 device_id / version_name 生成头部，必须与实际发出的 query 同源。
         val path = "$host$PLAYBACK_MODEL_PATH"
-        // 配了签名服务就让它算（本机移植版的 X-Medusa 结构与真机不一致，网关会静默返回空包）；
-        // 服务不可达时回退本机签名，行为与以前一致。
+        // 本机签名现在能独立跑通播放：真实 Argus/Ladon + 不带 medusa（见 Signer.sign 的 playback）。
+        // 远程签名服务改成兜底——它依赖的那套 so 会把 argus/ladon 降级成 4 字节占位值，
+        // 反而必然拿到空包，所以不能再放在首选位置。
         val signed =
-            RemoteSigner.sign(path, values, body) ?: Signer(device = values).sign(path, values, body)
+            try {
+                Signer(device = values).sign(path, values, body, playback = true)
+            } catch (error: Exception) {
+                if (Thread.currentThread().isInterrupted) throw error
+                RemoteSigner.sign(path, values, body) ?: throw error
+            }
         val headers = LinkedHashMap(signed.headers)
         headers["User-Agent"] = PLAYBACK_UA
         headers["x-tt-store-region"] = "cn-bj"

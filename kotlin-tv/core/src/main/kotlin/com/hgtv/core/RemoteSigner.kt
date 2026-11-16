@@ -10,20 +10,21 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * 远程签名：把请求交给「真机签名服务」算 X-Medusa 等头部。
+ * 远程签名：把请求交给外部服务（真机签名服务 / unidbg 容器）算签名头。
  *
- * 本机 Kotlin 移植版算出的 X-Medusa 比真机短约 160 字节，服务端会静默拒绝（HTTP 200 + 空包），
- * 而其余 6 个签名头本机算得是对的。所以播放接口改成：签名交给装着红果的手机算，
- * 网络请求仍由本机发出。
+ * **2026-11-16 起不再是首选路径。** 实测播放接口只硬校验 `x-argus` / `x-ladon`，
+ * 并**不需要** `x-medusa`；而 unidbg 那套 so 会把 argus/ladon 降级成 4 字节占位值，
+ * 于是必然拿到 `200 + 空包`。本机 [Signer] 已补上真实的 Argus/Ladon，可以独立签约，
+ * 所以这里降级为「本机签名抛异常时的兜底」，[endpoint] 留空即完全不启用。
  *
  * 服务端协议见 `.workbuddy/signsvc/`：
  *   POST {endpoint}/sign  {"url":..., "headers":[[k,v],...], "body_b64":...}
  *   -> {"ok":true, "url":"<身份与时间戳都已对齐的 url>", "headers":{...}}
  *
- * 服务会把 URL 里的 device_id / iid 改成签名手机上红果的当前身份（X-Medusa 内嵌了
- * device_id，不一致会被静默拒绝），并算好 x-ss-stub。所以**必须用返回的 url 发请求**。
+ * 服务会把 URL 里的 device_id / iid 改成签名端的当前身份（X-Medusa 内嵌了 device_id，
+ * 不一致会被静默拒绝），并算好 x-ss-stub。所以**必须用返回的 url 发请求**。
  *
- * 失败时返回 null，调用方回退到本机 [Signer]，不改变原有行为；
+ * 失败时返回 null，调用方回退到本机 [Signer]；
  * [lastError] / [successes] / [failures] 供「播放诊断」展示。
  */
 object RemoteSigner {

@@ -38,6 +38,9 @@ keystore.properties
 # Agent workspace memory
 .workbuddy/
 
+# 真实设备身份，只在本机用，绝不入库
+device-identity.txt
+
 # Delivery artifacts, native intermediates, local runtime
 /outputs/
 .cxx/

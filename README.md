@@ -21,20 +21,20 @@
 
 | 端 | 版本 | 说明 |
 | --- | --- | --- |
-| Android TV | 0.1.31 / versionCode 72 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
-| Android 手机 | 0.1.6 / versionCode 由 CI 构建序号生成 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
-| Windows | 0.1.31 | 便携 ZIP，挂在 TV 的 Release 上，未接入自动更新 |
+| Android TV | 0.1.32 / versionCode 73 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
+| Android 手机 | 0.1.7 / versionCode 由 CI 构建序号生成 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
+| Windows | 0.1.32 | 便携 ZIP，挂在 TV 的 Release 上，未接入自动更新 |
 
-## 播放签名服务（可选）
+## 播放签名
 
-播放接口的 `X-Medusa` 等签名头可以交给「独立签名版」手机计算：装好之后打开红果，
-它就在局域网的 18089 端口提供签名服务，不需要 adb、root 或电脑常驻。电视和 Windows
-都在「设置 → 签名服务」里填 `http://<手机IP>:18089`，服务会把请求里的设备身份对齐到
-签名手机的当前身份，网络请求本身仍由客户端发出。没配置或连不上时自动回退本机签名
-（本机签名的 `X-Medusa` 与真机不一致，网关可能静默返回空包，表现为进片没有画面）。
+签名在本机完成，**不需要任何外部服务**：`x-argus` / `x-ladon` 按官方算法逐字节复刻
+（`kotlin-tv/core/src/main/kotlin/com/hgtv/core/ArgusLadon.kt`），播放请求**不带**
+`x-medusa` / `x-helios`——实测网关只硬校验 argus/ladon，缺 medusa 反而正常出片，
+带上不完整值才会静默返回空包。电视、手机、Windows 三端共用这一份实现。
 
-签名机需要一台安卓手机与电视/电脑在同一局域网，红果保持后台运行；手机重启后打开一次即可，
-IP 变化后要回来改地址。签名机 APK 不随 GitHub Release 发布。
+「设置 → 签名服务（兜底）」仍然保留：只有本机签名抛异常时才会把请求交给一台装着重打包红果的
+手机（18089 端口）或 unidbg 容器计算，一般不用填。填了要注意它会顺带把设备身份对齐到服务端那台
+机器。签名机 APK 不随 GitHub Release 发布。
 
 
 ## Android TV
@@ -65,7 +65,7 @@ IP 变化后要回来改地址。签名机 APK 不随 GitHub Release 发布。
   仍拿不到时 Windows 端改用本机 FFmpeg 软解成 HLS 继续播放（起播多等十几秒，需要本机装了
   ffmpeg，或用环境变量 `HGTV_FFMPEG` 指向它），电视端没有 VVC 解码器，会提示换一集。
 - 播放中监测音画偏移并自动重同步。
-- 播放签名可交给独立签名版手机（「设置 → 签名服务」），真机算出的 `X-Medusa` 才不会被网关静默拒绝；没配或连不上时自动回退本机签名，「播放诊断」里能看成功/失败次数。详见上面的「播放签名服务」。
+- 播放签名在本机完成（真实 `x-argus` / `x-ladon`，播放不带 `x-medusa`），不需要外部服务；「播放诊断」里能看到签名与设备身份的来源。
 - 可选：把自己设备上官方客户端的播放身份放进 `device-identity.txt`，即可完全免掉每次播放的设备注册；
   不放也能正常播，只是每播一集要多注册一次。TV 上直接放到 `/sdcard/hgtv/device-identity.txt`，
   Windows 上放到 `hgtv_windows.exe` 旁边的程序目录，或 `%USERPROFILE%\.hgtv\device-identity.txt`，

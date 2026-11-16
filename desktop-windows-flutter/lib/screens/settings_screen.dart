@@ -296,8 +296,11 @@ Widget _section(BuildContext context, String title, List<Widget> children) {
   );
 }
 
-/// 真机签名服务：地址既写进 settings.json，也通过 /signing 端点下发给本机服务，
+/// 外部签名服务：地址既写进 settings.json，也通过 /signing 端点下发给本机服务，
 /// 因此改完当场生效，不必重启客户端。
+///
+/// 0.1.32 起不是必需项——本机签名已能独立完成播放（真实 Argus/Ladon，不带 medusa），
+/// 这里只作为本机签名出错时的兜底。
 class _SigningSection extends StatefulWidget {
   const _SigningSection({required this.session});
 
@@ -337,7 +340,7 @@ class _SigningSectionState extends State<_SigningSection> {
       widget.session.store.updateSigningService(endpoint);
       setState(() {
         _status = endpoint.isEmpty
-            ? '已关闭远程签名，播放改回本机签名'
+            ? '已关闭，播放只用本机签名'
             : '已启用并立即生效 · 成功 ${state['successes'] ?? 0} 次 / '
                 '失败 ${state['failures'] ?? 0} 次';
       });
@@ -351,10 +354,11 @@ class _SigningSectionState extends State<_SigningSection> {
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    return _section(context, '签名服务', [
+    return _section(context, '签名服务（兜底）', [
       Text(
-        '播放接口的 X-Medusa 由真机上的红果签名服务计算。手机装好独立签名版、'
-        '与电脑在同一局域网后，把它的地址填在这里；服务会顺带把设备身份对齐。',
+        '可选，一般不用填：本机签名已经能直接播放，不需要任何外部服务。'
+        '只有在播放一直不出画面、想换一个签名器时，才填跑签名服务的手机或电脑地址；'
+        '填了之后也只在本机签名出错时才会用它。',
         style: TextStyle(fontSize: 12, height: 1.6, color: scheme.onSurfaceVariant),
       ),
       const SizedBox(height: 12),
@@ -397,7 +401,7 @@ class _SigningSectionState extends State<_SigningSection> {
       ],
       const SizedBox(height: 6),
       Text(
-        '留空＝只用本机签名（播放接口可能返回空包）。手机重启后打开一次红果并让它'
+        '留空＝只用本机签名（推荐）。真要用外部服务：手机重启后打开一次红果并让它'
         '留在后台；手机 IP 变了要回来改地址。',
         style: TextStyle(fontSize: 11, height: 1.6, color: scheme.onSurfaceVariant),
       ),

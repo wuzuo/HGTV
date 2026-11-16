@@ -389,7 +389,19 @@ internal class Signer(
         return output.base64()
     }
 
-    fun sign(base: String, values: Map<String, String>, body: ByteArray? = null): Request {
+    /**
+     * 给 [base]（不含 query）签名。
+     *
+     * @param playback 播放接口专用：**不发** `x-medusa` / `x-helios`。实测播放网关只硬校验
+     *   `x-argus` / `x-ladon`，而本机这套 medusa 结构与真机不一致，带上反而一律 200 + 空包；
+     *   去掉就正常出片。其它接口保持不变，避免影响已有的搜索/目录链路。
+     */
+    fun sign(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray? = null,
+        playback: Boolean = false,
+    ): Request {
         val now = clock()
         val ts = (now / 1000).toInt()
         var ticket = now
@@ -401,6 +413,8 @@ internal class Signer(
             if (branch(query, body, ts) == 0) {
                 val url = "$base?$query"
                 val random = (random() * 65536).toInt()
+                val aid = values["aid"]?.toIntOrNull() ?: 8662
+                val stubHex = body?.let { digest("MD5", it).hex() } ?: ""
                 val headers =
                     linkedMapOf(
                         "User-Agent" to
@@ -413,17 +427,30 @@ internal class Signer(
                         "passport-sdk-version" to "5051452",
                         "x-xs-from-web" to "0",
                         "x-khronos" to ts.toString(),
-                        "x-ladon" to be32(ts).base64(),
-                        "x-argus" to le32(ts).base64(),
+                        "x-ladon" to
+                            LadonSigner.encrypt(ts, ArgusSigner.LICENSE_ID, aid, le32(rand())),
+                        "x-argus" to
+                            ArgusSigner.sign(
+                                query = query,
+                                stubHex = stubHex,
+                                ts = ts,
+                                aid = aid,
+                                licenseId = ArgusSigner.LICENSE_ID,
+                                deviceId = values["device_id"].orEmpty(),
+                                installId = values["iid"].orEmpty(),
+                                randField = rand(),
+                            ),
                         "x-gorgon" to gorgon(query, body, ts, random),
-                        "x-helios" to helios(ts),
-                        "x-medusa" to medusa(url, body, ts),
                         "x-tt-dt" to "",
                     )
+                if (!playback) {
+                    headers["x-helios"] = helios(ts)
+                    headers["x-medusa"] = medusa(url, body, ts)
+                }
                 if (body != null) {
                     headers["Content-Type"] = "application/json; charset=UTF-8"
                     headers["x-vc-bdturing-sdk-version"] = "4.0.3.cn"
-                    headers["x-ss-stub"] = digest("MD5", body).hex().uppercase()
+                    headers["x-ss-stub"] = stubHex.uppercase()
                 }
                 return Request(url, headers, body)
             }
