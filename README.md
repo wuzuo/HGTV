@@ -21,9 +21,9 @@
 
 | 端 | 版本 | 说明 |
 | --- | --- | --- |
-| Android TV | 0.1.32 / versionCode 73 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
-| Android 手机 | 0.1.7 / versionCode 由 CI 构建序号生成 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
-| Windows | 0.1.32 | 便携 ZIP，挂在 TV 的 Release 上，未接入自动更新 |
+| Android TV | 0.1.33 / versionCode 74 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
+| Android 手机 | 0.1.8 / versionCode 由 CI 构建序号生成 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
+| Windows | 0.1.33 | 便携 ZIP，挂在 TV 的 Release 上，未接入自动更新 |
 
 ## 播放签名
 

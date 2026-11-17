@@ -16,10 +16,10 @@ class SignerTest {
             val body = if (row.isNull("body")) null else row.getString("body").toByteArray()
             var seed = 17L
             val signer =
-                Signer({ ts.toLong() * 1000 }) {
+                Signer({ ts.toLong() * 1000 }, random = {
                     seed = (seed * 1664525 + 1013904223) and 0xffffffffL
                     seed / 4294967296.0
-                }
+                })
             assertEquals("branch $i", 0, signer.branch(query, body, ts))
             assertEquals(
                 "hash $i",

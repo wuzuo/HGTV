@@ -54,8 +54,8 @@ class PlaybackDeviceSessionTest {
                 }
                 .build()
         val session = PlaybackDeviceSession()
-        ContentRepository(http, playbackSession = session).streamLadder("123")
-        ContentRepository(http, playbackSession = session).streamLadder("123")
+        ContentRepository(http, playbackSession = session, v5Enabled = false).streamLadder("123")
+        ContentRepository(http, playbackSession = session, v5Enabled = false).streamLadder("123")
         // 成功拿到模型就不会换身份：跨 Repository 复用同一台设备。
         assertEquals(1, registrations)
         assertEquals(2, models)
@@ -106,7 +106,7 @@ class PlaybackDeviceSessionTest {
                 DeviceRegister.Registered("333", "bad"),
             )) {
             val repo =
-                ContentRepository(http, playbackSession = PlaybackDeviceSession { registered })
+                ContentRepository(http, playbackSession = PlaybackDeviceSession { registered }, v5Enabled = false)
             assertThrows(PlaybackDeviceRegistrationException::class.java) {
                 repo.streamLadder("123")
             }
@@ -172,7 +172,7 @@ class PlaybackDeviceSessionTest {
                         .build()
                 }
                 .build()
-        val ladder = ContentRepository(http, playbackSession = PlaybackDeviceSession()).streamLadder("123")
+        val ladder = ContentRepository(http, playbackSession = PlaybackDeviceSession(), v5Enabled = false).streamLadder("123")
         assertEquals(listOf(720), ladder.renditions.map { it.quality })
         assertEquals(2, registrations)
         assertTrue("first attempts must use the original identity: $devices", devices.all { it == "111" || it == "222" })
@@ -209,7 +209,7 @@ class PlaybackDeviceSessionTest {
                         .build()
                 }
                 .build()
-        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession())
+        val repo = ContentRepository(http, playbackSession = PlaybackDeviceSession(), v5Enabled = false)
         assertThrows(EmptyPlaybackResponseException::class.java) { repo.streamLadder("123") }
         // 播放域名有 5 个，每个都要换一台设备身份（首台设备注册 1 次 + 换 4 次）。
         assertEquals(5, registrations)
@@ -241,7 +241,7 @@ class PlaybackDeviceSessionTest {
                         .build()
                 }
                 .build()
-        val ladder = ContentRepository(http, playbackSession = PlaybackDeviceSession()).streamLadder("123")
+        val ladder = ContentRepository(http, playbackSession = PlaybackDeviceSession(), v5Enabled = false).streamLadder("123")
         assertEquals(listOf(720), ladder.renditions.map { it.quality })
         assertEquals(2, registrations)
     }

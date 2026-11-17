@@ -650,6 +650,7 @@ class ContentRepositoryTest {
                 .build(),
             clock,
             session,
+            v5Enabled = false,
         )
 
     private fun rankPayload(page: Int = 1, totalPages: Int = 2) =

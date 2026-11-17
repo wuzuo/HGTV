@@ -70,7 +70,7 @@ class ArgusLadonTest {
     /** 播放请求不能带 medusa/helios，其它接口保持原样。 */
     @Test
     fun playbackOmitsMedusaAndHelios() {
-        val signer = Signer({ ts.toLong() * 1000 }) { 0.25 }
+        val signer = Signer({ ts.toLong() * 1000 }, random = { 0.25 })
         val values = linkedMapOf("aid" to "8662", "device_id" to "1", "iid" to "2")
         val playback = signer.sign("https://example.com/player", values, body, playback = true)
         assertEquals(null, playback.headers["x-medusa"])

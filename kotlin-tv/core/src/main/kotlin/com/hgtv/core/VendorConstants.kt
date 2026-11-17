@@ -6,6 +6,10 @@ internal object VendorConstants {
         "com.phoenix.read/71332 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
     const val APP_UA =
         "com.phoenix.read/72232 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3)"
+
+    /** v5 播放模型请求使用的厂商 UA（与移动版 player 请求一致）。 */
+    const val PLAYER_UA =
+        "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)"
     val device =
         linkedMapOf(
             "iid" to "1905892595382586",

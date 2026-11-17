@@ -206,6 +206,8 @@ constructor(
             .build(),
     private val clock: () -> Long = System::currentTimeMillis,
     private val playbackSession: PlaybackDeviceSession = PlaybackDeviceSession(),
+    /** 是否优先走已验证的 v5 播放签名；旧路径回归测试里显式关闭。 */
+    private val v5Enabled: Boolean = true,
 ) {
     private val signer = Signer()
 
@@ -252,6 +254,9 @@ constructor(
 
     /** 当前**注册**身份是否已经用掉播放接口的那一次放行机会（本地真实身份不受此限）。 */
     private var playbackIdentitySpent = false
+
+    /** v5 播放专用的匿名注册身份；与旧的 v3 路径互不干扰。失败时置空以换一台。 */
+    private var v5Identity: PlaybackDeviceSession.Profile? = null
 
     // 构造并执行内容请求，统一检查 HTTP 状态和响应大小；仅按规则重试临时故障。
     private fun text(
@@ -946,6 +951,57 @@ constructor(
         return playbackModel(listOf(id), id, deviceLevel).toString()
     }
 
+    /**
+     * Android v5 播放模型：匿名注册身份 + 移动版 profile +.gz body + 三个签名头。
+     *
+     * 与旧路径完全独立：身份、签名器、host、请求体都不共用。任何环节失败都抛异常，
+     * 由 [streamLadder] 降级回旧路径，不把「v5 不可用」说成「没有播放资源」。
+     */
+    private fun v5PlaybackModel(id: String): JSONObject {
+        var lastError: Exception? = null
+        for (attempt in 0 until 2) {
+            val identity =
+                v5Identity ?: try {
+                    playbackSession.registeredProfile(http)
+                } catch (error: Exception) {
+                    if (Thread.currentThread().isInterrupted) throw error
+                    lastError = error
+                    continue
+                }
+            try {
+                val now = clock()
+                val values = MobilePlayback.query(identity.values, now)
+                val body = MobilePlayback.body(id)
+                val request = MobilePlayback.sign(MobilePlayback.ENDPOINT, values, body, now)
+                // 已验证实现用 NO_COOKIES：v5 模型接口不依赖注册接口的 store-region cookie。
+                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                val response = text(request.url, request, client = transport)
+                val trimmed = response.trim()
+                if (trimmed.isEmpty()) throw EmptyPlaybackResponseException("stage=v5")
+                val json =
+                    try {
+                        JSONObject(trimmed)
+                    } catch (_: Exception) {
+                        throw IOException("v5 响应非 JSON：${trimmed.take(120)}")
+                    }
+                val code = json.optInt("Code", json.optInt("code", 0))
+                if (code != 0) throw IOException("v5 业务码 $code")
+                val data = json.optJSONObject("data") ?: throw IOException("v5 播放信息为空")
+                val entries = data.optJSONObject("1004") ?: data
+                val current =
+                    entries.optJSONObject(id) ?: throw IOException("v5 播放信息缺少本集 $id")
+                v5Identity = identity
+                return current
+            } catch (error: Exception) {
+                if (Thread.currentThread().isInterrupted) throw error
+                lastError = error
+                // 空响应/业务码多半是身份额度问题：换一台注册身份再试一次。
+                v5Identity = null
+            }
+        }
+        throw lastError ?: EmptyPlaybackResponseException("stage=v5")
+    }
+
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
@@ -953,6 +1009,16 @@ constructor(
         require(metadataAhead.size <= 2 && metadataAhead.all { it.matches(Regex("[0-9]{1,30}")) })
         val ids = (listOf(id) + metadataAhead).distinct()
         val cached = takeCachedPlaybackModel(id)
+
+        // v5 优先：2026-11-17 起服务端恢复要求 v5 medusa，旧路径一律 200+0 字节。
+        // 这一步任何环节失败（注册、签名、空响应、解析）都静默降级回旧路径，
+        // 保证新方案不稳定时不会比原来更差。
+        if (v5Enabled && cached == null) {
+            val v5 = runCatching { ladderFrom(v5PlaybackModel(id)) }.getOrNull()
+            if (v5 != null) return v5
+        }
+
+        // 以下为原有 v3 路径，保留作降级与对照。
         // 这一集已知只给 BVC2：直接用「注册身份 + 低档机口径」要，省掉一次注定白跑的请求。
         val knownFallback = synchronized(bvc2FallbackEpisodes) { id in bvc2FallbackEpisodes }
         val entry =
