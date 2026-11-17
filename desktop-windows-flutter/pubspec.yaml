@@ -3,7 +3,7 @@ description: "HGTV Windows 桌面客户端（Flutter + media_kit）"
 publish_to: 'none'
 
 # Windows 客户端版本：与 lib/app_info.dart 及 scripts/build-windows-flutter.ps1 同步。
-version: 0.1.33+33
+version: 0.1.34+34
 
 environment:
   sdk: ^3.13.1

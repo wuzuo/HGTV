@@ -51,7 +51,6 @@ import androidx.media3.session.MediaController
 import androidx.media3.ui.PlayerView
 import com.hgtv.core.CloudProgress
 import com.hgtv.core.Danmaku
-import com.hgtv.core.DeviceIdentityMonitor
 import com.hgtv.core.PlaybackQuality
 import com.hgtv.core.RecoveryBudget
 import com.hgtv.core.RelatedWork
@@ -791,18 +790,6 @@ fun PlayerScreen(
                         style = MaterialTheme.typography.bodyMedium,
                         textAlign = TextAlign.Center,
                     )
-                    // 没有本地设备身份时，「空响应」基本都会撞上：注册身份只放行一次。
-                    // 这里给一句能直接照做的提示，比让用户反复点重试有用。
-                    if (DeviceIdentityMonitor.peek() == null) {
-                        Text(
-                            "没有读到设备身份配置，每集都要重新注册设备。" +
-                                "可以在「我的 → 播放与存储设置 → 播放身份」里放一份 device-identity.txt。",
-                            color = Palette.TextTertiary,
-                            style = MaterialTheme.typography.labelSmall,
-                            textAlign = TextAlign.Center,
-                            modifier = Modifier.padding(top = 10.dp),
-                        )
-                    }
                     Text(
                         "点这里重试",
                         color = Palette.Accent,

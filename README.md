@@ -21,20 +21,17 @@
 
 | 端 | 版本 | 说明 |
 | --- | --- | --- |
-| Android TV | 0.1.33 / versionCode 74 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
-| Android 手机 | 0.1.8 / versionCode 由 CI 构建序号生成 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
-| Windows | 0.1.33 | 便携 ZIP，挂在 TV 的 Release 上，未接入自动更新 |
+| Android TV | 0.1.34 / versionCode 75 | 安装标识 `io.github.wuzuo.hgtv`，namespace `com.hgtv.tv` |
+| Android 手机 | 0.1.9 / versionCode 由 CI 构建序号生成 | 安装标识 `io.github.wuzuo.hgtv.phone`，namespace `com.hgtv.phone`，可与 TV 端同装 |
+| Windows | 0.1.34 | 便携 ZIP，挂在 TV 的 Release 上，未接入自动更新 |
 
 ## 播放签名
 
-签名在本机完成，**不需要任何外部服务**：`x-argus` / `x-ladon` 按官方算法逐字节复刻
-（`kotlin-tv/core/src/main/kotlin/com/hgtv/core/ArgusLadon.kt`），播放请求**不带**
-`x-medusa` / `x-helios`——实测网关只硬校验 argus/ladon，缺 medusa 反而正常出片，
-带上不完整值才会静默返回空包。电视、手机、Windows 三端共用这一份实现。
+签名在本机完成，**不需要任何外部服务，也不需要放置设备身份文件**：播放请求使用纯 Kotlin 复刻的
+v5 签名（`x-khronos` / `x-helios` / `x-medusa`），请求体按官方 gzip 字节精确绑定，
+设备身份来自匿名注册、cdid 随机生成。电视、手机、Windows 三端共用 `kotlin-tv/core` 的同一份实现。
 
-「设置 → 签名服务（兜底）」仍然保留：只有本机签名抛异常时才会把请求交给一台装着重打包红果的
-手机（18089 端口）或 unidbg 容器计算，一般不用填。填了要注意它会顺带把设备身份对齐到服务端那台
-机器。签名机 APK 不随 GitHub Release 发布。
+签名机 APK 与 unidbg 容器只是历史研究产物，不参与播放，也不随 GitHub Release 发布。
 
 
 ## Android TV
@@ -65,17 +62,8 @@
   仍拿不到时 Windows 端改用本机 FFmpeg 软解成 HLS 继续播放（起播多等十几秒，需要本机装了
   ffmpeg，或用环境变量 `HGTV_FFMPEG` 指向它），电视端没有 VVC 解码器，会提示换一集。
 - 播放中监测音画偏移并自动重同步。
-- 播放签名在本机完成（真实 `x-argus` / `x-ladon`，播放不带 `x-medusa`），不需要外部服务；「播放诊断」里能看到签名与设备身份的来源。
-- 可选：把自己设备上官方客户端的播放身份放进 `device-identity.txt`，即可完全免掉每次播放的设备注册；
-  不放也能正常播，只是每播一集要多注册一次。TV 上直接放到 `/sdcard/hgtv/device-identity.txt`，
-  Windows 上放到 `hgtv_windows.exe` 旁边的程序目录，或 `%USERPROFILE%\.hgtv\device-identity.txt`，
-  路径与格式见[开发笔记](docs/DEVELOPMENT_NOTES.md)。读到配置、以及配置在使用中失效，两端都会
-  明确提示一次（TV 为浮层提示，Windows 为底部状态栏 + 提示条），不用再靠现象猜。
-  Windows 的「设置 → 设备身份」还能随时看当前读到哪个文件、或该放到哪里。
-  - 需要存储权限才能读这个目录：Android 11+ 要在系统设置里给 HGTV 开启「所有文件访问」，
-    Android 6–10 则在首次启动时授权存储权限。没有权限时系统会把目录静默隐藏，文件放着也读不到，
-    所以 TV 端首次启动会说明一次并给出直达入口，设置页的「设备身份配置」也能随时看当前状态
-    （已读取／需授权／未放置）。
+- 播放签名在本机完成（纯 Kotlin v5：`x-medusa` / `x-helios` / `x-khronos` + 精确 gzip body 绑定），
+  不需要外部服务，也不读取 `device-identity.txt`；「播放诊断」记录解码器能力与异常信息。
 
 ### 界面与弹幕
 

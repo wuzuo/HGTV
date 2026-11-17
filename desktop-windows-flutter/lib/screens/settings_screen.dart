@@ -16,7 +16,7 @@ class SettingsScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return AnimatedBuilder(
-      // 设备身份状态由 5 秒轮询更新，设置页要跟着刷新，不能只听本地偏好。
+      // 桥接状态由后台轮询更新，设置页要跟着刷新，不能只听本地偏好。
       animation: Listenable.merge([session.store, session]),
       builder: (context, _) {
         final store = session.store;
@@ -93,44 +93,6 @@ class SettingsScreen extends StatelessWidget {
               ),
             ]),
             const SizedBox(height: 20),
-            _section(context, '设备身份', [
-              Text(
-                _identityHeadline,
-                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w600),
-              ),
-              const SizedBox(height: 6),
-              SelectableText(
-                _identityDetail,
-                style: TextStyle(
-                  fontSize: 11,
-                  height: 1.7,
-                  color: Theme.of(context).colorScheme.onSurfaceVariant,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  OutlinedButton.icon(
-                    onPressed: () => _openFolder(
-                      context,
-                      session.identityConfigured && session.identityFile.isNotEmpty
-                          ? File(session.identityFile).parent.path
-                          : _programDir,
-                    ),
-                    icon: const Icon(Icons.folder_open, size: 18),
-                    label: Text(session.identityConfigured ? '打开所在文件夹' : '打开程序目录'),
-                  ),
-                  const SizedBox(width: 10),
-                  OutlinedButton(
-                    onPressed: () => _showIdentityHelp(context),
-                    child: const Text('如何配置'),
-                  ),
-                ],
-              ),
-            ]),
-            const SizedBox(height: 20),
-            _SigningSection(session: session),
-            const SizedBox(height: 20),
             _section(context, '关于', [
               Text('${AppInfo.product} ${AppInfo.version}'),
               const SizedBox(height: 4),
@@ -180,62 +142,6 @@ class SettingsScreen extends StatelessWidget {
           ],
         );
       },
-    );
-  }
-
-  /// 打包布局下 exe 所在目录就是程序目录；`flutter run` 时是 Debug 输出目录。
-  String get _programDir => File(Platform.resolvedExecutable).parent.path;
-
-  String get _userHome =>
-      Platform.environment['USERPROFILE'] ?? Platform.environment['HOME'] ?? '.';
-
-  String get _identityHeadline {
-    if (session.identityRejected) return '配置已失效，当前按自动注册播放';
-    if (session.identityConfigured) {
-      return session.identityStatus.isEmpty ? '已读取设备身份配置' : session.identityStatus;
-    }
-    return '未放置配置，当前每次播放都会注册一台新设备';
-  }
-
-  String get _identityDetail {
-    if (session.identityConfigured && session.identityFile.isNotEmpty) {
-      return '读取位置：${session.identityFile}';
-    }
-    return '把 device-identity.txt 放到下面任一位置，重启客户端即生效：\n'
-        '· $_programDir${Platform.pathSeparator}device-identity.txt\n'
-        '· $_userHome${Platform.pathSeparator}.hgtv${Platform.pathSeparator}device-identity.txt';
-  }
-
-  void _showIdentityHelp(BuildContext context) {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('设备身份配置'),
-        content: const SizedBox(
-          width: 480,
-          child: SingleChildScrollView(
-            child: Text(
-              'HGTV 可以复用一台真实设备的播放身份，省掉每次播放前的设备注册。'
-              '身份来自官方「红果免费短剧」客户端，在已 root 的手机上用配套小工具读出后，'
-              '存成纯文本即可。\n\n'
-              '文件名固定为 device-identity.txt，内容三行：\n'
-              'device_id=...\n'
-              'install_id=...\n'
-              'cdid=...\n\n'
-              '放置位置（任选其一）：\n'
-              '1. 程序目录，即 hgtv_windows.exe 同级；\n'
-              '2. 用户目录下的 .hgtv 文件夹，即 %USERPROFILE%\\.hgtv\\\n\n'
-              '放好后重启客户端，底部状态栏与这一页都会显示「已读取」。'
-              '不放也能正常播放，只是每集多注册一次设备。\n\n'
-              '注意：同一份身份不要和手机上的官方客户端同时播放，否则会被判成设备异常。',
-              style: TextStyle(fontSize: 13, height: 1.7),
-            ),
-          ),
-        ),
-        actions: [
-          TextButton(onPressed: () => Navigator.of(context).pop(), child: const Text('关闭')),
-        ],
-      ),
     );
   }
 
@@ -294,119 +200,6 @@ Widget _section(BuildContext context, String title, List<Widget> children) {
       ],
     ),
   );
-}
-
-/// 外部签名服务：地址既写进 settings.json，也通过 /signing 端点下发给本机服务，
-/// 因此改完当场生效，不必重启客户端。
-///
-/// 0.1.32 起不是必需项——本机签名已能独立完成播放（真实 Argus/Ladon，不带 medusa），
-/// 这里只作为本机签名出错时的兜底。
-class _SigningSection extends StatefulWidget {
-  const _SigningSection({required this.session});
-
-  final AppSession session;
-
-  @override
-  State<_SigningSection> createState() => _SigningSectionState();
-}
-
-class _SigningSectionState extends State<_SigningSection> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.session.store.signingService,
-  );
-  String _status = '';
-  bool _busy = false;
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  Future<void> _apply(String value) async {
-    final endpoint = value.trim().replaceAll(RegExp(r'/+$'), '');
-    if (endpoint.isNotEmpty &&
-        !(endpoint.startsWith('http://') || endpoint.startsWith('https://'))) {
-      setState(() => _status = '地址要以 http:// 或 https:// 开头');
-      return;
-    }
-    setState(() {
-      _busy = true;
-      _status = '';
-    });
-    try {
-      final state = await widget.session.api.setSigningService(endpoint);
-      if (!mounted) return;
-      widget.session.store.updateSigningService(endpoint);
-      setState(() {
-        _status = endpoint.isEmpty
-            ? '已关闭，播放只用本机签名'
-            : '已启用并立即生效 · 成功 ${state['successes'] ?? 0} 次 / '
-                '失败 ${state['failures'] ?? 0} 次';
-      });
-    } catch (problem) {
-      if (mounted) setState(() => _status = '保存失败：$problem');
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return _section(context, '签名服务（兜底）', [
-      Text(
-        '可选，一般不用填：本机签名已经能直接播放，不需要任何外部服务。'
-        '只有在播放一直不出画面、想换一个签名器时，才填跑签名服务的手机或电脑地址；'
-        '填了之后也只在本机签名出错时才会用它。',
-        style: TextStyle(fontSize: 12, height: 1.6, color: scheme.onSurfaceVariant),
-      ),
-      const SizedBox(height: 12),
-      TextField(
-        controller: _controller,
-        enabled: !_busy,
-        decoration: const InputDecoration(
-          labelText: '服务地址',
-          hintText: 'http://192.168.0.101:18089',
-          isDense: true,
-          border: OutlineInputBorder(),
-        ),
-        onSubmitted: _busy ? null : (value) => _apply(value),
-      ),
-      const SizedBox(height: 10),
-      Row(
-        children: [
-          FilledButton(
-            onPressed: _busy ? null : () => _apply(_controller.text),
-            child: const Text('保存并启用'),
-          ),
-          const SizedBox(width: 10),
-          OutlinedButton(
-            onPressed: _busy
-                ? null
-                : () {
-                    _controller.clear();
-                    _apply('');
-                  },
-            child: const Text('关闭'),
-          ),
-        ],
-      ),
-      if (_status.isNotEmpty) ...[
-        const SizedBox(height: 10),
-        Text(
-          _status,
-          style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-        ),
-      ],
-      const SizedBox(height: 6),
-      Text(
-        '留空＝只用本机签名（推荐）。真要用外部服务：手机重启后打开一次红果并让它'
-        '留在后台；手机 IP 变了要回来改地址。',
-        style: TextStyle(fontSize: 11, height: 1.6, color: scheme.onSurfaceVariant),
-      ),
-    ]);
-  }
 }
 
 class _SettingLabel extends StatelessWidget {

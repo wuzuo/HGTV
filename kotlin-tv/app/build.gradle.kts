@@ -21,10 +21,9 @@ android {
         applicationId = "io.github.wuzuo.hgtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 74
-        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.33"
-        // 真机签名服务地址（可选，填独立签名版手机或运行签名服务的电脑）。
-        // 空字符串＝不启用，播放仍走本机签名；电视上也可在「设置 → 签名服务」里改。
+        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 75
+        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.34"
+        // 构建期注入的可选签名服务地址；0.1.34 起设置页已移除该入口，默认留空＝纯本机签名。
         buildConfigField(
             "String",
             "SIGNING_SERVICE",
