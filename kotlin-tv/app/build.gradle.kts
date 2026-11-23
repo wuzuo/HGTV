@@ -21,8 +21,8 @@ android {
         applicationId = "io.github.wuzuo.hgtv"
         minSdk = 23
         targetSdk = 36
-        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 75
-        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.34"
+        versionCode = System.getenv("HGTV_VERSION_CODE")?.toInt() ?: 76
+        versionName = System.getenv("HGTV_VERSION_NAME") ?: "0.1.35"
         // 构建期注入的可选签名服务地址；0.1.34 起设置页已移除该入口，默认留空＝纯本机签名。
         buildConfigField(
             "String",

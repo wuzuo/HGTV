@@ -208,13 +208,15 @@ internal class Signer(
             .hex()
     }
 
-    private fun deviceProto() =
+    // medusa 内嵌的设备身份必须与 query 中的注册身份一致（服务端核对 medusa 明文里的
+    // device_id 与请求参数）；identity 为空时沿用构造时的静态占位身份。
+    private fun deviceProto(identity: Map<String, String>? = null) =
         proto(
             f(1, 1, "sint"),
             f(2, 2, "sint"),
             f(3, "8662"),
-            f(4, device.getValue("device_id")),
-            f(5, "Ai6svO3PyrwDOUSmO6ZcResxu"),
+            f(4, (identity ?: device).getValue("device_id")),
+            f(5, processNonce),
             f(6, "!noperm!"),
             f(7, -888888, "sint"),
             f(8, -888888, "sint"),
@@ -224,19 +226,19 @@ internal class Signer(
             f(12, "Asia/Shanghai,8"),
             f(13, "zh_CN"),
             f(14, 4, "sint"),
-            f(16, 255.24993896484375, "float"),
-            f(17, 35.58599090576172, "float"),
-            f(18, 3.467449188232422, "float"),
-            f(19, 3.467449188232422, "float"),
-            f(20, 255.1754913330078, "float"),
-            f(21, 42.17544174194336, "float"),
+            f(16, 0f, "float"),
+            f(17, 0f, "float"),
+            f(18, 0f, "float"),
+            f(19, 0f, "float"),
+            f(20, 0f, "float"),
+            f(21, 0f, "float"),
             f(22, "16"),
             f(23, 41, "sint"),
             f(24, 36, "sint"),
-            f(25, 1728388016635L, "sint"),
-            f(26, 1728388016635L, "sint"),
-            f(27, 1728388016635L, "sint"),
-            f(28, 1728388016637L, "sint"),
+            f(25, processStarted, "sint"),
+            f(26, processStarted, "sint"),
+            f(27, processStarted, "sint"),
+            f(28, processStarted, "sint"),
             f(29, -1, "sint"),
             f(30, "25053RT47C"),
             f(31, "Redmi"),
@@ -283,13 +285,9 @@ internal class Signer(
         return encoded.map { it.toByte() }.toByteArray()
     }
 
-    fun medusa(
-        url: String,
-        body: ByteArray?,
-        ts: Int,
-        identity: Map<String, String>? = null,
-    ): String {
+    fun medusa(url: String, body: ByteArray?, ts: Int, identity: Map<String, String>? = null): String {
         if (mobileV5) return medusaV5(url, body, ts, identity ?: device)
+        val who = identity ?: device
         val bodyMd5 = body?.let { digest("MD5", it) } ?: ByteArray(16)
         val query = url.substringAfter('?').toByteArray()
         val querySm3 = sm3(query)
@@ -304,7 +302,7 @@ internal class Signer(
         val messageRand = unsigned(rand())
         val envLaunch = (random() * 21).toInt() + 100
         val envPid = (random() * 2000).toInt() + 10001
-        val version = device.getValue("version_name")
+        val version = who.getValue("version_name")
         val env =
             proto(
                 f(1, envLaunch, "sint"),
@@ -313,7 +311,7 @@ internal class Signer(
                 f(5, 7, "sint"),
                 f(6, "v04.06.04.03-bugfix"),
                 f(7, envPid, "sint"),
-                f(12, deviceProto()),
+                f(12, deviceProto(who)),
                 f(13, proto(f(1, clock() / 1000, "sint"), f(2, -2, "sint"), f(4, 200, "sint"))),
                 f(14, version),
             )
@@ -324,7 +322,7 @@ internal class Signer(
                 f(2, 3, "sint"),
                 f(3, messageRand, "sint"),
                 f(4, "8662"),
-                f(5, device.getValue("device_id")),
+                f(5, who.getValue("device_id")),
                 f(6, "1588093228"),
                 f(7, version),
                 f(8, "v04.06.04-ml-android"),
@@ -334,7 +332,7 @@ internal class Signer(
                 f(13, queryBodyTs),
                 f(14, querySm3.copyOf(6)),
                 f(15, nested),
-                f(16, "AXYQOS6n2m60x1fVZHIrH3iol"),
+                f(16, processNonce),
                 f(17, ts, "sint"),
                 f(19, queryHash),
                 f(20, "none"),

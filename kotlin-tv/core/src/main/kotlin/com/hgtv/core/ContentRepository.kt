@@ -258,6 +258,28 @@ constructor(
     /** v5 播放专用的匿名注册身份；与旧的 v3 路径互不干扰。失败时置空以换一台。 */
     private var v5Identity: PlaybackDeviceSession.Profile? = null
 
+    /** 执行一个已签名的原生 OkHttp 请求（用于 v5 签名的 GET video_tab）。 */
+    private fun executeGet(builder: okhttp3.Request.Builder, client: OkHttpClient): String {
+        val request = builder.build()
+        return RequestScope.execute(client.newCall(request)) { response ->
+            if (!response.isSuccessful) throw ContentHttpException(response.code)
+            val body = response.body ?: throw IOException("内容响应为空")
+            if (body.contentLength() > 16 * 1024 * 1024) throw IOException("内容响应过大")
+            val bytes = body.bytes()
+            if (bytes.size > 16 * 1024 * 1024) throw IOException("内容响应过大")
+            val decoded =
+                if (response.header("Content-Encoding").equals("gzip", ignoreCase = true) ||
+                    (bytes.size >= 2 && bytes[0] == 0x1f.toByte() && bytes[1] == 0x8b.toByte())
+                ) {
+                    java.util.zip.GZIPInputStream(java.io.ByteArrayInputStream(bytes))
+                        .use { it.readBytes() }
+                } else bytes
+            val content = String(decoded, Charsets.UTF_8)
+            if (content.isBlank()) throw EmptyPlaybackResponseException("stage=video-tab")
+            content
+        }
+    }
+
     // 构造并执行内容请求，统一检查 HTTP 状态和响应大小；仅按规则重试临时故障。
     private fun text(
         url: String,
@@ -1002,6 +1024,32 @@ constructor(
         throw lastError ?: EmptyPlaybackResponseException("stage=v5")
     }
 
+    /**
+     * v5 空响应时的独立降级：GET `video_tab/multi_video_model`。
+     *
+     * hongguoTV-main 2026-11-22 的空响应修复：这条 GET 也必须用 v5 签名（空 body 参与签名），
+     * 旧版用 v3 签名的 GET 一律 200+0B。请求匿名（NO_COOKIES），身份用注册的匿名设备。
+     */
+    private fun tabVideoModel(id: String, identity: PlaybackDeviceSession.Profile): JSONObject? {
+        val host = PlayRetryPlan.host(0)
+        val request = MobilePlayback.videoTabRequest(id, identity.values, host, clock())
+        // 播放模型接口不依赖注册接口的 store-region cookie，必须匿名。
+        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+        val text = executeGet(request, transport)
+        val root = runCatching { JSONObject(text) }.getOrNull() ?: return null
+        PlaybackModels.checkStatus(root)
+        val code = root.optInt("code", root.optInt("Code", -1))
+        if (code != 0) return null
+        val data = root.optJSONObject("data") ?: return null
+        val rows = data.optJSONObject("video_model_data") ?: data
+        val row = rows.optJSONObject(id)
+            ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+            ?: return null
+        val model = PlaybackModels.objectValue(row.opt("video_model")) ?: return null
+        if ((model.optJSONArray("video_list")?.length() ?: 0) == 0) return null
+        return JSONObject().put("video_model", model)
+    }
+
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
@@ -1016,6 +1064,13 @@ constructor(
         if (v5Enabled && cached == null) {
             val v5 = runCatching { ladderFrom(v5PlaybackModel(id)) }.getOrNull()
             if (v5 != null) return v5
+            // v5 空响应：走 hongguoTV-main 11-22 的兼容分支（GET video_tab + v5 签名 + 空 body）。
+            val compat =
+                runCatching {
+                    val identity = playbackSession.registeredProfile(http)
+                    tabVideoModel(id, identity)?.let(::ladderFrom)
+                }.getOrNull()
+            if (compat != null) return compat
         }
 
         // 以下为原有 v3 路径，保留作降级与对照。

@@ -28,7 +28,7 @@ internal object MobilePlayback {
      * 移动版查询参数。[device] 必须提供 `device_id` / `iid` / `cdid`，取自匿名注册身份；
      * 其余字段是固定的移动版 profile，v5 medusa 明文会内嵌 version_name/device_type 等。
      */
-    fun query(device: Map<String, String>, now: Long): LinkedHashMap<String, String> =
+    fun query(device: Map<String, String>): LinkedHashMap<String, String> =
         linkedMapOf(
             "aid" to "8662",
             "app_name" to "novelread",
@@ -42,8 +42,70 @@ internal object MobilePlayback {
             "iid" to device.getValue("iid"),
             "cdid" to device.getValue("cdid"),
             "device_id" to device.getValue("device_id"),
+        )
+
+    /** 保留带时间戳的重载，供既有 v5 主请求调用方使用。 */
+    fun query(device: Map<String, String>, now: Long): LinkedHashMap<String, String> =
+        query(device).apply { put("_rticket", now.toString()) }
+
+    /**
+     * GET video_tab/multi_video_model 也必须用 v5 签名：空 body 参与签名（md5(empty)），
+     * 但最终请求是 GET，去掉 stub/Content-Type/Content-Encoding。
+     *
+     * 这是 hongguoTV-main 2026-11-22 的空响应修复：此前用 v3 签名的 GET 一律 200+0B。
+     * UA 用官方移动版完整串（对齐参考 videoTabRequest），not PLAYER_UA。
+     */
+    fun videoTabRequest(
+        id: String,
+        device: Map<String, String>,
+        host: String,
+        now: Long,
+    ): okhttp3.Request.Builder {
+        require(id.matches(Regex("[0-9]{1,30}")))
+        val values = query(device) + linkedMapOf(
+            "video_id" to id,
+            "video_id_type" to "0",
+            "device_level" to "1",
+            "need_all_video_definition" to "1",
+            "need_mp4_align" to "0",
+            "use_os_player" to "0",
+            "video_platform" to "1024",
+            "source" to "0",
+            "from_video_id" to "",
             "_rticket" to now.toString(),
         )
+        val url = "https://$host/reading/bookapi/video_tab/multi_video_model/v1/"
+        val signed = signPlaybackV5(url, values, ByteArray(0), now)
+        return okhttp3.Request.Builder()
+            .url(signed.url)
+            .get()
+            .header(
+                "User-Agent",
+                "com.phoenix.read/73932 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)",
+            )
+            .header("Accept", "application/json; charset=utf-8")
+            .header("Accept-Language", "zh-CN,zh;q=0.9")
+            .apply {
+                signed.headers.forEach { (k, v) -> header(k, v) }
+                removeHeader("x-ss-stub")
+                removeHeader("Content-Type")
+                removeHeader("Content-Encoding")
+            }
+    }
+
+    /** v5 签名：空 body 用 ByteArray(0)（GET 场景），保持 medusa 与 query 同源。 */
+    private fun signPlaybackV5(
+        base: String,
+        values: Map<String, String>,
+        body: ByteArray,
+        now: Long,
+    ): Signer.Request {
+        val signed = v5Signer.signPlayback(base, values, body, now)
+        // mobileV5 下 signPlayback 只保留 x-khronos/x-helios/x-medusa，
+        // 这里补齐 Accept，供 GET 使用；body 由调用方决定是否附加。
+        val headers = LinkedHashMap(signed.headers)
+        return Signer.Request(signed.url, headers, null)
+    }
 
     /** gzip 的请求体，逐字段对齐已验证实现（device_level=1 换可解码的 HEVC 档位）。 */
     fun body(id: String): ByteArray {

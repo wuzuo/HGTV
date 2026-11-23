@@ -49,7 +49,17 @@ class PlaybackDeviceSession(
          * 主动替换。注册来的身份是 false，用一次就得换。
          */
         val trusted: Boolean = false,
-    )
+    ) {
+        private var playbackSigner: Signer? = null
+
+        /**
+         * 同一注册会话内复用签名器：medusa 明文内嵌的进程 nonce 与启动时间必须跨请求稳定，
+         * 否则服务端核对身份时会判定为不同客户端。
+         */
+        @Synchronized
+        fun signer(clock: () -> Long, values: Map<String, String>): Signer =
+            playbackSigner ?: Signer(clock, values).also { playbackSigner = it }
+    }
 
     private var cdid = UUID.randomUUID().toString()
     private var ready: Profile? = null
