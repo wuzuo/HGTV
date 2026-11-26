@@ -59,6 +59,13 @@ class PlaybackDeviceSession(
         @Synchronized
         fun signer(clock: () -> Long, values: Map<String, String>): Signer =
             playbackSigner ?: Signer(clock, values).also { playbackSigner = it }
+
+        // 新协议：primary 模型空响应后短暂退避后台预取；拿到可播档位即清除。
+        @Volatile private var emptyPrimaryModelAt: Long? = null
+        fun recordEmptyPrimaryModel(now: Long) { emptyPrimaryModelAt = now }
+        fun recordPlayablePrimaryModel() { emptyPrimaryModelAt = null }
+        fun shouldDeferPlaybackPrefetch(now: Long): Boolean =
+            emptyPrimaryModelAt?.let { now - it in 0 until 30_000L } == true
     }
 
     private var cdid = UUID.randomUUID().toString()

@@ -163,6 +163,8 @@ class StreamLadder(val renditions: List<Rendition>) {
 
 class ContentHttpException(val statusCode: Int) : IOException("内容请求失败（HTTP $statusCode）")
 
+internal class PlaybackServiceBackoffException : IOException("播放服务繁忙，请稍后重试")
+
 class SearchSessionExpiredException : IOException("搜索结果已过期，请从第 1 页重新搜索")
 
 /**
@@ -173,8 +175,11 @@ class SearchSessionExpiredException : IOException("搜索结果已过期，请�
  * 所以把具体原因挂在 message 上——给用户看的文案另由 [PlaybackSources] 统一映射，
  * 这里的信息只会出现在日志和诊断输出里。
  */
-class EmptyPlaybackResponseException(detail: String = "") :
-    IOException("播放接口暂时返回空响应，请稍后重试" + if (detail.isBlank()) "" else "（$detail）")
+/** `detail` 仅携带路径代号、HTTP/字节数/协议与注册结果，不含地址与凭据。 */
+class EmptyPlaybackResponseException(val detail: String? = null, val allPlaybackModelsEmpty: Boolean = false) :
+    IOException("播放接口暂时返回空响应，请稍后重试")
+
+class PlaybackDiagnosticException(val detail: String) : IOException("播放恢复诊断")
 
 /**
  * 整集只有本机解不了的编码（BVC2/H.266）时抛出。
@@ -254,9 +259,6 @@ constructor(
 
     /** 当前**注册**身份是否已经用掉播放接口的那一次放行机会（本地真实身份不受此限）。 */
     private var playbackIdentitySpent = false
-
-    /** v5 播放专用的匿名注册身份；与旧的 v3 路径互不干扰。失败时置空以换一台。 */
-    private var v5Identity: PlaybackDeviceSession.Profile? = null
 
     /** 执行一个已签名的原生 OkHttp 请求（用于 v5 签名的 GET video_tab）。 */
     private fun executeGet(builder: okhttp3.Request.Builder, client: OkHttpClient): String {
@@ -973,83 +975,6 @@ constructor(
         return playbackModel(listOf(id), id, deviceLevel).toString()
     }
 
-    /**
-     * Android v5 播放模型：匿名注册身份 + 移动版 profile +.gz body + 三个签名头。
-     *
-     * 与旧路径完全独立：身份、签名器、host、请求体都不共用。任何环节失败都抛异常，
-     * 由 [streamLadder] 降级回旧路径，不把「v5 不可用」说成「没有播放资源」。
-     */
-    private fun v5PlaybackModel(id: String): JSONObject {
-        var lastError: Exception? = null
-        for (attempt in 0 until 2) {
-            val identity =
-                v5Identity ?: try {
-                    playbackSession.registeredProfile(http)
-                } catch (error: Exception) {
-                    if (Thread.currentThread().isInterrupted) throw error
-                    lastError = error
-                    continue
-                }
-            try {
-                val now = clock()
-                val values = MobilePlayback.query(identity.values, now)
-                val body = MobilePlayback.body(id)
-                val request = MobilePlayback.sign(MobilePlayback.ENDPOINT, values, body, now)
-                // 已验证实现用 NO_COOKIES：v5 模型接口不依赖注册接口的 store-region cookie。
-                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-                val response = text(request.url, request, client = transport)
-                val trimmed = response.trim()
-                if (trimmed.isEmpty()) throw EmptyPlaybackResponseException("stage=v5")
-                val json =
-                    try {
-                        JSONObject(trimmed)
-                    } catch (_: Exception) {
-                        throw IOException("v5 响应非 JSON：${trimmed.take(120)}")
-                    }
-                val code = json.optInt("Code", json.optInt("code", 0))
-                if (code != 0) throw IOException("v5 业务码 $code")
-                val data = json.optJSONObject("data") ?: throw IOException("v5 播放信息为空")
-                val entries = data.optJSONObject("1004") ?: data
-                val current =
-                    entries.optJSONObject(id) ?: throw IOException("v5 播放信息缺少本集 $id")
-                v5Identity = identity
-                return current
-            } catch (error: Exception) {
-                if (Thread.currentThread().isInterrupted) throw error
-                lastError = error
-                // 空响应/业务码多半是身份额度问题：换一台注册身份再试一次。
-                v5Identity = null
-            }
-        }
-        throw lastError ?: EmptyPlaybackResponseException("stage=v5")
-    }
-
-    /**
-     * v5 空响应时的独立降级：GET `video_tab/multi_video_model`。
-     *
-     * hongguoTV-main 2026-11-22 的空响应修复：这条 GET 也必须用 v5 签名（空 body 参与签名），
-     * 旧版用 v3 签名的 GET 一律 200+0B。请求匿名（NO_COOKIES），身份用注册的匿名设备。
-     */
-    private fun tabVideoModel(id: String, identity: PlaybackDeviceSession.Profile): JSONObject? {
-        val host = PlayRetryPlan.host(0)
-        val request = MobilePlayback.videoTabRequest(id, identity.values, host, clock())
-        // 播放模型接口不依赖注册接口的 store-region cookie，必须匿名。
-        val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
-        val text = executeGet(request, transport)
-        val root = runCatching { JSONObject(text) }.getOrNull() ?: return null
-        PlaybackModels.checkStatus(root)
-        val code = root.optInt("code", root.optInt("Code", -1))
-        if (code != 0) return null
-        val data = root.optJSONObject("data") ?: return null
-        val rows = data.optJSONObject("video_model_data") ?: data
-        val row = rows.optJSONObject(id)
-            ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
-            ?: return null
-        val model = PlaybackModels.objectValue(row.opt("video_model")) ?: return null
-        if ((model.optJSONArray("video_list")?.length() ?: 0) == 0) return null
-        return JSONObject().put("video_model", model)
-    }
-
     /** Every playable rendition of one episode, best tier first; one player-API round trip. */
     @JvmOverloads
     fun streamLadder(id: String, metadataAhead: List<String> = emptyList()): StreamLadder {
@@ -1058,19 +983,37 @@ constructor(
         val ids = (listOf(id) + metadataAhead).distinct()
         val cached = takeCachedPlaybackModel(id)
 
-        // v5 优先：2026-11-17 起服务端恢复要求 v5 medusa，旧路径一律 200+0 字节。
-        // 这一步任何环节失败（注册、签名、空响应、解析）都静默降级回旧路径，
-        // 保证新方案不稳定时不会比原来更差。
+        // 新协议（hongguoTV-main 2026-11-26）：currentApp 7.4.5.32 / preload 端点 + v5 medusa
+        // 完整设备信封。这是服务端当前唯一可出片的形态；任何环节失败都静默降级回旧路径。
         if (v5Enabled && cached == null) {
-            val v5 = runCatching { ladderFrom(v5PlaybackModel(id)) }.getOrNull()
-            if (v5 != null) return v5
-            // v5 空响应：走 hongguoTV-main 11-22 的兼容分支（GET video_tab + v5 签名 + 空 body）。
-            val compat =
-                runCatching {
-                    val identity = playbackSession.registeredProfile(http)
-                    tabVideoModel(id, identity)?.let(::ladderFrom)
-                }.getOrNull()
-            if (compat != null) return compat
+            val appLadder = runCatching {
+                val identity = playbackSession.registeredProfile(http)
+                MobilePlayback.ladder(id, identity.values, http, MobilePlayback.signer, clock())
+                    .also { identity.recordPlayablePrimaryModel() }
+            }.getOrNull()
+            if (appLadder != null && appLadder.renditions.isNotEmpty()) return appLadder
+
+            // 新协议空响应：GET video_tab（v5 签名 + 空 body）+ 备用 host 的 mobile model。
+            val compat = runCatching {
+                val identity = playbackSession.registeredProfile(http)
+                identity.recordEmptyPrimaryModel(clock())
+                val builder = MobilePlayback.videoTabRequest(id, identity.values, PlayRetryPlan.host(0), clock())
+                val transport = http.newBuilder().cookieJar(CookieJar.NO_COOKIES).build()
+                val root = JSONObject(executeGet(builder, transport))
+                PlaybackModels.checkStatus(root)
+                val data = root.optJSONObject("data") ?: return@runCatching null
+                val rows = data.optJSONObject("video_model_data") ?: data
+                val row = rows.optJSONObject(id)
+                    ?: rows.keys().asSequence().mapNotNull { rows.optJSONObject(it) }.firstOrNull()
+                    ?: return@runCatching null
+                val model = PlaybackModels.objectValue(row.opt("video_model")) ?: return@runCatching null
+                val ladder = ladderFrom(JSONObject().put("video_model", model))
+                if (ladder.renditions.isNotEmpty()) return@runCatching ladder
+                // 只给 bytevc2 时，换备用 host 的 currentApp mobile model 再取一次。
+                MobilePlayback.ladder(id, identity.values, http, MobilePlayback.signer, clock(),
+                    host = PlayRetryPlan.host(1))
+            }.getOrNull()
+            if (compat != null && compat.renditions.isNotEmpty()) return compat
         }
 
         // 以下为原有 v3 路径，保留作降级与对照。

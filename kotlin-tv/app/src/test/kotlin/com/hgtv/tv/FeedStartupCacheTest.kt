@@ -114,7 +114,11 @@ class FeedStartupCacheTest {
             assertEquals(1, paths.count { it == "/detail" })
             assertEquals(2, paths.count { it == "/novel/player/multi_video_model/player/v1" })
             assertEquals(listOf("bytes=0-262143", "bytes=0-262143"), ranges)
-            assertEquals(5, paths.size)
+            // 2026-11-26 新协议：每次取流先试 currentApp preload、再试 video_tab；
+            // mock 对这两个端点是空响应，代码正确降级回 player/v1。两轮共多出 4 次探测。
+            assertEquals(2, paths.count { it == "/novel/player/multi_video_model/preload/v1" })
+            assertEquals(2, paths.count { it == "/reading/bookapi/video_tab/multi_video_model/v1/" })
+            assertEquals(9, paths.size)
         } finally {
             controller.pause().stop().destroy()
         }
